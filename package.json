@@ -1,0 +1,46 @@
+{
+  "name": "parquet-lite",
+  "version": "0.1.0",
+  "description": "Lightweight Parquet reader/writer using Rust compiled to WebAssembly",
+  "type": "module",
+  "main": "./dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./writer": {
+      "types": "./dist/writer.d.ts",
+      "import": "./dist/writer.js"
+    },
+    "./reader": {
+      "types": "./dist/reader.d.ts",
+      "import": "./dist/reader.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build:writer-web": "wasm-pack build crates/parquet-lite-writer --target web --out-dir ../../dist/wasm-writer",
+    "build:reader-web": "wasm-pack build crates/parquet-lite-reader --target web --out-dir ../../dist/wasm-reader",
+    "build:wasm": "npm run build:writer-web && npm run build:reader-web",
+    "build:js": "node scripts/build.js",
+    "build": "npm run build:wasm && npm run build:js",
+    "test": "node --test test/*.test.js",
+    "clean": "rm -rf dist"
+  },
+  "keywords": [
+    "parquet",
+    "wasm",
+    "webassembly",
+    "data",
+    "columnar"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {}
+}

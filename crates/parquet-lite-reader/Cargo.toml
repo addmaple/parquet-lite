@@ -1,0 +1,22 @@
+[package]
+name = "parquet-lite-reader"
+version = "0.1.0"
+edition = "2021"
+description = "Lightweight Parquet reader compiled to WASM"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasm-bindgen = "0.2"
+parquet2 = { version = "0.17", default-features = false, features = ["snappy"] }
+js-sys = "0.3"
+serde = { version = "1.0", features = ["derive"] }
+serde-wasm-bindgen = "0.6"
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+[features]
+default = []
+
