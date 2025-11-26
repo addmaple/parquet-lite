@@ -10,6 +10,17 @@ A lightweight JavaScript library for reading and writing Parquet files, powered 
 - **Bundler-friendly**: Works with Vite, Webpack, Rollup, etc.
 - **Pure ESM**: Native ES modules
 
+## Size Comparison
+
+| Library | Package Size | WASM/Code Size | Notes |
+|---------|-------------|----------------|-------|
+| **@addmaple/parquet-lite** | **167.5 KB** | Reader: 162 KB<br>Writer: 233 KB<br>Total: **395 KB** | Separate reader/writer modules |
+| **parquet-wasm** | **5.9 MB** | ~1.2 MB (brotli) | Includes Apache Arrow, all compression codecs |
+| **parquetjs** | **38.3 KB** | 219 KB unpacked | Pure JS, no WASM, slower |
+| **hyparquet** | ~9.7 KB | ~9.7 KB (gzipped) | Read-only, pure JS |
+
+**Note:** `parquetjs` does support Snappy compression (via `snappyjs` dependency), but the 38.3 KB package size seems suspiciously small - it may not include all dependencies or may have limitations. The unpacked size of 219 KB is more realistic for a full implementation.
+
 ## Installation
 
 ```bash
