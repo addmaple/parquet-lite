@@ -194,3 +194,7 @@ cargo test && npm test
 ## License
 
 MIT
+
+---
+
+**Disclaimer:** This project was created entirely with Anthropic Opus 4.5 and Cursor Composer.
