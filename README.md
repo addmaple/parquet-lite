@@ -32,17 +32,38 @@ Benchmark results comparing `@addmaple/parquet-lite` vs `parquetjs` (Node.js v22
 
 | Rows | Operation | @addmaple/parquet-lite | parquetjs | Speedup |
 |------|-----------|------------------------|-----------|---------|
-| 1,000 | Write | 20.57 ms | 15.61 ms | 0.76x |
-| 1,000 | Read | 4.78 ms | 4.74 ms | 0.99x |
-| 10,000 | Write | 6.74 ms | 78.78 ms | **11.68x faster** |
-| 10,000 | Read | 4.18 ms | 16.02 ms | **3.84x faster** |
-| 100,000 | Write | 56.04 ms | 730.66 ms | **13.04x faster** |
-| 100,000 | Read | 50.91 ms | 89.09 ms | **1.75x faster** |
+| 1,000 | Write | ~20 ms | ~15 ms | ~0.75x |
+| 1,000 | Read | ~5 ms | ~5 ms | ~1x |
+| 10,000 | Write | ~7 ms | ~79 ms | **~11x faster** |
+| 10,000 | Read | ~4 ms | ~16 ms | **~4x faster** |
+| 100,000 | Write | ~56 ms | ~731 ms | **~13x faster** |
+| 100,000 | Read | ~51 ms | ~89 ms | **~1.75x faster** |
 
 **Key findings:**
 - **WASM performance scales better** - Significant speedups at larger dataset sizes
 - **Smaller file sizes** - Better compression (e.g., 2.1 MB vs 3.15 MB for 100k rows)
 - **Lower memory usage** - More efficient memory footprint for reads
+- **Optimized TypedArray handling** - Efficient bulk memory transfer using `to_vec()` for zero-copy operations
+
+#### Enum Performance
+
+For enum columns, using index arrays provides massive performance improvements:
+
+| Dataset Size | Method | Time | Speedup vs Full Strings |
+|--------------|--------|------|-------------------------|
+| 10,000 rows | Full strings | ~155 ms | baseline |
+| 10,000 rows | Index array | ~2 ms | **~75x faster** |
+| 10,000 rows | TypedArray indices | ~1.6 ms | **~99x faster** |
+| 100,000 rows | Full strings | ~2 s | baseline |
+| 100,000 rows | Index array | ~22 ms | **~93x faster** |
+| 1,000,000 rows | Full strings | ~5 s | baseline |
+| 1,000,000 rows | Index array | ~174 ms | **~28x faster** |
+
+**Enum optimization tips:**
+- Use `enumValues` in schema + index arrays for best performance
+- TypedArrays (`Uint8Array`) are fastest for small-to-medium datasets
+- Regular arrays work well for very large datasets
+- All methods produce identical Parquet files (same file size)
 
 Run benchmarks yourself: `npm run benchmark`
 
@@ -235,6 +256,103 @@ const data = await readParquet(bytes, columns?);
 | `double` | `number` or `Float64Array` | 64-bit float |
 | `boolean` | `boolean` | True/false |
 | `string` | `string` | UTF-8 text |
+
+### Logical Types
+
+Logical types provide semantic meaning to physical types, improving interoperability with tools like pandas, Spark, and DuckDB:
+
+| Logical Type | Physical Type | Description | Parameters |
+|--------------|---------------|-------------|------------|
+| `date` | `int32` | Days since Unix epoch | - |
+| `time_millis` | `int32` | Time of day in milliseconds | - |
+| `time_micros` | `int64` | Time of day in microseconds | - |
+| `timestamp_millis` | `int64` | Unix timestamp in milliseconds | - |
+| `timestamp_micros` | `int64` | Unix timestamp in microseconds | - |
+| `utf8` | `string` | UTF-8 encoded string (explicit) | - |
+| `json` | `string` | JSON text | - |
+| `bson` | `string` | BSON-encoded data | - |
+| `decimal` | `int32`/`int64`/`string` | Arbitrary precision decimal | `precision`, `scale` |
+| `enum` | `string` | Enumerated string values | `enumValues` (optional, for index arrays) |
+| `integer` | `int32`/`int64` | Signed/unsigned integers with specific bit width | `bitWidth`, `isSigned` |
+| `uuid` | `FixedLenByteArray(16)` | 128-bit UUID | - |
+
+**Example:**
+```javascript
+const schema = [
+  { name: 'date', type: 'int32', logicalType: 'date' },
+  { name: 'timestamp', type: 'int64', logicalType: 'timestamp_millis' },
+  { name: 'text', type: 'string', logicalType: 'utf8' },
+  { name: 'price', type: 'int64', logicalType: 'decimal', precision: 10, scale: 2 },
+  { name: 'status', type: 'string', logicalType: 'enum' },
+  { name: 'age', type: 'int32', logicalType: 'integer', bitWidth: 8, isSigned: true }
+];
+
+const data = {
+  date: [1, 2, 3],
+  timestamp: [1000000n, 2000000n],
+  text: ['Hello', 'World'],
+  price: [10000, 20000], // Stored as integers (100.00, 200.00)
+  status: ['active', 'inactive'], // Enum: pass strings normally
+  age: new Int8Array([25, 30, 35]) // Integer: can use matching TypedArray
+};
+
+// Efficient Enum with index arrays:
+const enumSchema = [
+  { name: 'status', type: 'string', logicalType: 'enum', enumValues: ['active', 'inactive', 'pending'] }
+];
+const enumData = {
+  status: [0, 1, 2, 0] // Indices into enumValues - more efficient than full strings
+  // Or use TypedArray: status: new Uint8Array([0, 1, 2, 0])
+};
+```
+
+**TypedArray Support for Integer Logical Types:**
+When using `integer` logical type, you can pass matching TypedArrays for better performance:
+- `integer(8, false)` → `Uint8Array`
+- `integer(8, true)` → `Int8Array`
+- `integer(16, false)` → `Uint16Array`
+- `integer(16, true)` → `Int16Array`
+- `integer(32, false)` → `Uint32Array`
+- `integer(32, true)` → `Int32Array`
+- `integer(64, false)` → `BigUint64Array`
+- `integer(64, true)` → `BigInt64Array`
+
+Regular arrays also work - TypedArrays are optimized using efficient bulk memory transfer (`to_vec()`) for zero-copy operations.
+
+**Enum with TypedArrays:**
+For enum columns, TypedArrays (`Uint8Array`, `Uint16Array`, `Uint32Array`) provide excellent performance:
+- Efficient bulk memory transfer using `to_vec()`
+- Faster than regular arrays for small-to-medium datasets
+- Up to **99x faster** than full string arrays
+
+### Automatic Type Conversion
+
+The library automatically converts JavaScript types when logical types are specified:
+
+**JavaScript Date Objects:**
+- `date` logical type: Converts to days since Unix epoch (INT32)
+- `timestamp_millis`/`timestamp_micros`: Converts to milliseconds/microseconds since Unix epoch (INT64)
+- `time_millis`/`time_micros`: Converts to milliseconds/microseconds since midnight (INT32/INT64)
+
+**JavaScript Objects:**
+- `json` logical type: Automatically stringifies objects to JSON strings
+
+**Example:**
+```javascript
+const schema = [
+  { name: 'date', type: 'int32', logicalType: 'date' },
+  { name: 'timestamp', type: 'int64', logicalType: 'timestamp_millis' },
+  { name: 'data', type: 'string', logicalType: 'json' }
+];
+
+const data = {
+  date: [new Date('2024-01-01'), new Date('2024-01-02')], // Automatically converted
+  timestamp: [new Date('2024-01-01T12:00:00Z')], // Automatically converted
+  data: [{ a: 1, b: 'test' }, { x: 2 }] // Automatically stringified to JSON
+};
+
+const bytes = await writeParquet(schema, data);
+```
 
 **Note:** TypedArrays are supported and can be more efficient for large datasets:
 - `Int32Array` for `int32`

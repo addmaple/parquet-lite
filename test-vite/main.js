@@ -136,3 +136,4 @@ document.getElementById('test-full').addEventListener('click', async () => {
 log('🚀 Parquet Lite Vite Test Ready');
 log('   Click buttons above to test, or check console for details');
 
+

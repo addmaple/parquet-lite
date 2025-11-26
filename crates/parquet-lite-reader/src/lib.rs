@@ -5,7 +5,7 @@ use parquet2::{
     },
     page::split_buffer,
     read::{decompress, get_page_iterator, read_metadata, levels::get_bit_width},
-    schema::types::PhysicalType,
+    schema::types::{PhysicalType, PrimitiveLogicalType},
     schema::Repetition,
 };
 use serde::{Deserialize, Serialize};
@@ -18,6 +18,8 @@ pub struct ColumnInfo {
     #[serde(rename = "type")]
     pub col_type: String,
     pub nullable: bool,
+    #[serde(default)]
+    pub logical_type: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -39,6 +41,37 @@ fn physical_type_to_string(pt: PhysicalType) -> String {
         PhysicalType::FixedLenByteArray(_) => "bytes",
     }
     .to_string()
+}
+
+fn logical_type_to_string(lt: &PrimitiveLogicalType) -> String {
+    match lt {
+        PrimitiveLogicalType::Date => "date".to_string(),
+        PrimitiveLogicalType::Time { unit, .. } => {
+            match unit {
+                parquet2::schema::types::TimeUnit::Milliseconds => "time_millis".to_string(),
+                parquet2::schema::types::TimeUnit::Microseconds => "time_micros".to_string(),
+                parquet2::schema::types::TimeUnit::Nanoseconds => "time_nanos".to_string(),
+            }
+        }
+        PrimitiveLogicalType::Timestamp { unit, .. } => {
+            match unit {
+                parquet2::schema::types::TimeUnit::Milliseconds => "timestamp_millis".to_string(),
+                parquet2::schema::types::TimeUnit::Microseconds => "timestamp_micros".to_string(),
+                parquet2::schema::types::TimeUnit::Nanoseconds => "timestamp_nanos".to_string(),
+            }
+        }
+        PrimitiveLogicalType::String => "utf8".to_string(),
+        PrimitiveLogicalType::Json => "json".to_string(),
+        PrimitiveLogicalType::Bson => "bson".to_string(),
+        PrimitiveLogicalType::Decimal(precision, scale) => format!("decimal({},{})", precision, scale),
+        PrimitiveLogicalType::Enum => "enum".to_string(),
+        PrimitiveLogicalType::Integer(int_type) => {
+            let (bit_width, is_signed): (usize, bool) = (*int_type).into();
+            format!("integer({},{})", bit_width, if is_signed { "signed" } else { "unsigned" })
+        }
+        PrimitiveLogicalType::Uuid => "uuid".to_string(),
+        _ => "unknown".to_string(),
+    }
 }
 
 fn decode_rle_value(bytes: &[u8], bit_width: usize) -> u32 {
@@ -112,11 +145,72 @@ fn decode_definition_levels(
     Ok(Some(levels))
 }
 
+fn convert_value_to_date(
+    value: &JsValue,
+    logical_type: Option<&PrimitiveLogicalType>,
+    _physical_type: PhysicalType,
+) -> Result<JsValue, JsError> {
+    if let Some(lt) = logical_type {
+        match lt {
+            PrimitiveLogicalType::Date => {
+                // Date: days since Unix epoch (INT32) -> Date object
+                // Value should be a number (i32 converted to JsValue)
+                if let Some(days_f64) = value.as_f64() {
+                    let days_i32 = days_f64 as i32;
+                    let timestamp_ms = (days_i32 as i64) * 86_400_000;
+                    let date = js_sys::Date::new(&JsValue::from_f64(timestamp_ms as f64));
+                    return Ok(date.into());
+                }
+            }
+            PrimitiveLogicalType::Timestamp { unit, .. } => {
+                // Timestamp: milliseconds/microseconds/nanoseconds since Unix epoch (INT64) -> Date object
+                // Value is already converted to f64 in the iterator
+                if let Some(timestamp_f64) = value.as_f64() {
+                    let timestamp_ms = match unit {
+                        parquet2::schema::types::TimeUnit::Milliseconds => timestamp_f64 as i64,
+                        parquet2::schema::types::TimeUnit::Microseconds => (timestamp_f64 / 1_000.0) as i64,
+                        parquet2::schema::types::TimeUnit::Nanoseconds => (timestamp_f64 / 1_000_000.0) as i64,
+                    };
+                    let date = js_sys::Date::new(&JsValue::from_f64(timestamp_ms as f64));
+                    return Ok(date.into());
+                }
+            }
+            PrimitiveLogicalType::Time { unit, .. } => {
+                // Time: milliseconds/microseconds/nanoseconds since midnight -> Date object (at epoch + time)
+                // Can be INT32 or INT64 depending on unit
+                if let Some(time_f64) = value.as_f64() {
+                    let time_ms = match unit {
+                        parquet2::schema::types::TimeUnit::Milliseconds => time_f64 as i64,
+                        parquet2::schema::types::TimeUnit::Microseconds => (time_f64 / 1_000.0) as i64,
+                        parquet2::schema::types::TimeUnit::Nanoseconds => (time_f64 / 1_000_000.0) as i64,
+                    };
+                    // Create date at epoch + time offset
+                    let date = js_sys::Date::new(&JsValue::from_f64(time_ms as f64));
+                    return Ok(date.into());
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(value.clone())
+}
+
+fn convert_json_string_to_object(value: &JsValue) -> Result<JsValue, JsError> {
+    if let Some(json_str) = value.as_string() {
+        let parsed = js_sys::JSON::parse(&json_str)
+            .map_err(|_| JsError::new("Failed to parse JSON string"))?;
+        return Ok(parsed);
+    }
+    Ok(value.clone())
+}
+
 fn append_values_with_nulls<I>(
     target: &js_sys::Array,
     def_levels: Option<&[u32]>,
     max_def_level: i16,
     mut values: I,
+    logical_type: Option<&PrimitiveLogicalType>,
+    physical_type: PhysicalType,
 ) -> Result<(), JsError>
 where
     I: Iterator<Item = JsValue>,
@@ -128,7 +222,15 @@ where
                 let value = values
                     .next()
                     .ok_or_else(|| JsError::new("Missing value for definition level"))?;
-                target.push(&value);
+                
+                // Convert based on logical type
+                let converted = if let Some(PrimitiveLogicalType::Json) = logical_type {
+                    convert_json_string_to_object(&value)?
+                } else {
+                    convert_value_to_date(&value, logical_type, physical_type)?
+                };
+                
+                target.push(&converted);
             } else {
                 target.push(&JsValue::NULL);
             }
@@ -141,11 +243,25 @@ where
         }
     } else {
         for value in values {
-            target.push(&value);
+            // Convert based on logical type
+            let converted = if let Some(PrimitiveLogicalType::Json) = logical_type {
+                convert_json_string_to_object(&value)?
+            } else {
+                convert_value_to_date(&value, logical_type, physical_type)?
+            };
+            
+            target.push(&converted);
         }
     }
 
     Ok(())
+}
+
+// Helper functions for safe array conversions
+#[inline]
+fn slice_to_array<const N: usize>(slice: &[u8]) -> Result<[u8; N], JsError> {
+    slice.try_into()
+        .map_err(|_| JsError::new(&format!("Invalid slice length for array conversion (expected {}, got {})", N, slice.len())))
 }
 
 fn decode_fixed_width_values<T, F>(
@@ -155,7 +271,7 @@ fn decode_fixed_width_values<T, F>(
     mut convert: F,
 ) -> Result<Vec<T>, JsError>
 where
-    F: FnMut(&[u8]) -> T,
+    F: FnMut(&[u8]) -> Result<T, JsError>,
 {
     let mut offset = 0;
     let mut result = Vec::with_capacity(count);
@@ -163,7 +279,7 @@ where
         if offset + width > buffer.len() {
             return Err(JsError::new("Unexpected end of buffer while decoding values"));
         }
-        let value = convert(&buffer[offset..offset + width]);
+        let value = convert(&buffer[offset..offset + width])?;
         result.push(value);
         offset += width;
     }
@@ -193,7 +309,10 @@ fn decode_binary_values(buffer: &[u8], count: usize) -> Result<Vec<String>, JsEr
                 "Unexpected end of buffer while decoding byte array length",
             ));
         }
-        let len = u32::from_le_bytes(buffer[offset..offset + 4].try_into().unwrap()) as usize;
+        let len_bytes: [u8; 4] = buffer[offset..offset + 4]
+            .try_into()
+            .map_err(|_| JsError::new("Invalid buffer slice for length"))?;
+        let len = u32::from_le_bytes(len_bytes) as usize;
         offset += 4;
         if offset + len > buffer.len() {
             return Err(JsError::new(
@@ -227,6 +346,7 @@ pub fn read_parquet_metadata(data: &[u8]) -> Result<JsValue, JsError> {
                     name: pt.field_info.name.clone(),
                     col_type: physical_type_to_string(pt.physical_type),
                     nullable: pt.field_info.repetition != Repetition::Required,
+                    logical_type: pt.logical_type.as_ref().map(logical_type_to_string),
                 })
             } else {
                 None
@@ -327,19 +447,27 @@ pub fn read_parquet(data: &[u8], columns: Option<Vec<String>>) -> Result<JsValue
                         })
                         .unwrap_or(data_page.num_values());
                     
-                    match primitive_type.physical_type {
+                    let logical_type = primitive_type.logical_type.as_ref();
+                    let physical_type = primitive_type.physical_type;
+                    
+                    match physical_type {
                         PhysicalType::Int32 => {
                             let values = decode_fixed_width_values(
                                 values_buffer,
                                 present_values,
                                 4,
-                                |chunk| i32::from_le_bytes(chunk.try_into().unwrap()),
+                                |chunk| {
+                                    let arr = slice_to_array::<4>(chunk)?;
+                                    Ok(i32::from_le_bytes(arr))
+                                },
                             )?;
                             append_values_with_nulls(
                                 &values_array,
                                 definition_levels.as_deref(),
                                 descriptor.max_def_level,
                                 values.into_iter().map(JsValue::from),
+                                logical_type,
+                                physical_type,
                             )?;
                         }
                         PhysicalType::Int64 => {
@@ -347,13 +475,30 @@ pub fn read_parquet(data: &[u8], columns: Option<Vec<String>>) -> Result<JsValue
                                 values_buffer,
                                 present_values,
                                 8,
-                                |chunk| i64::from_le_bytes(chunk.try_into().unwrap()),
+                                |chunk| {
+                                    let arr = slice_to_array::<8>(chunk)?;
+                                    Ok(i64::from_le_bytes(arr))
+                                },
                             )?;
+                            let use_bigint = !matches!(
+                                logical_type,
+                                Some(PrimitiveLogicalType::Timestamp { .. }
+                                    | PrimitiveLogicalType::Time { .. })
+                            );
                             append_values_with_nulls(
                                 &values_array,
                                 definition_levels.as_deref(),
                                 descriptor.max_def_level,
-                                values.into_iter().map(|v| JsValue::from(v as f64)),
+                                values.into_iter().map(|v| {
+                                    if use_bigint {
+                                        let bigint = js_sys::BigInt::from(v);
+                                        bigint.into()
+                                    } else {
+                                        JsValue::from(v as f64)
+                                    }
+                                }),
+                                logical_type,
+                                physical_type,
                             )?;
                         }
                         PhysicalType::Float => {
@@ -361,13 +506,18 @@ pub fn read_parquet(data: &[u8], columns: Option<Vec<String>>) -> Result<JsValue
                                 values_buffer,
                                 present_values,
                                 4,
-                                |chunk| f32::from_le_bytes(chunk.try_into().unwrap()),
+                                |chunk| {
+                                    let arr = slice_to_array::<4>(chunk)?;
+                                    Ok(f32::from_le_bytes(arr))
+                                },
                             )?;
                             append_values_with_nulls(
                                 &values_array,
                                 definition_levels.as_deref(),
                                 descriptor.max_def_level,
                                 values.into_iter().map(JsValue::from),
+                                logical_type,
+                                physical_type,
                             )?;
                         }
                         PhysicalType::Double => {
@@ -375,13 +525,18 @@ pub fn read_parquet(data: &[u8], columns: Option<Vec<String>>) -> Result<JsValue
                                 values_buffer,
                                 present_values,
                                 8,
-                                |chunk| f64::from_le_bytes(chunk.try_into().unwrap()),
+                                |chunk| {
+                                    let arr = slice_to_array::<8>(chunk)?;
+                                    Ok(f64::from_le_bytes(arr))
+                                },
                             )?;
                             append_values_with_nulls(
                                 &values_array,
                                 definition_levels.as_deref(),
                                 descriptor.max_def_level,
                                 values.into_iter().map(JsValue::from),
+                                logical_type,
+                                physical_type,
                             )?;
                         }
                         PhysicalType::Boolean => {
@@ -391,6 +546,8 @@ pub fn read_parquet(data: &[u8], columns: Option<Vec<String>>) -> Result<JsValue
                                 definition_levels.as_deref(),
                                 descriptor.max_def_level,
                                 values.into_iter().map(JsValue::from),
+                                logical_type,
+                                physical_type,
                             )?;
                         }
                         PhysicalType::ByteArray => {
@@ -402,6 +559,8 @@ pub fn read_parquet(data: &[u8], columns: Option<Vec<String>>) -> Result<JsValue
                                 values
                                     .into_iter()
                                     .map(|v| JsValue::from_str(&v)),
+                                logical_type,
+                                physical_type,
                             )?;
                         }
                         _ => {}

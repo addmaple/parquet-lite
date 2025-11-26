@@ -81,10 +81,22 @@ export async function initWriter(source) {
 /**
  * Write data to Parquet format
  * 
- * @param {Array<{name: string, type: string, nullable?: boolean}>} schema - Column definitions
+ * @param {Array<{name: string, type: string, nullable?: boolean, logicalType?: string, precision?: number, scale?: number, bitWidth?: number, isSigned?: boolean, enumValues?: string[]}>} schema - Column definitions
  *   Supported types: 'int32', 'int64', 'float', 'double', 'boolean', 'string'
- * @param {Object<string, Array|TypedArray>} data - Object with column names as keys and arrays or TypedArrays as values
- *   TypedArrays supported: Int32Array, BigInt64Array, Float32Array, Float64Array
+ *   Supported logical types: 'date', 'time_millis', 'time_micros', 'timestamp_millis', 'timestamp_micros', 'utf8', 'json', 'bson', 'decimal', 'enum', 'integer', 'uuid'
+ *   Logical type parameters:
+ *   - decimal: requires precision (number) and scale (number)
+ *   - integer: requires bitWidth (8|16|32|64) and isSigned (boolean)
+ * @param {Object<string, Array|TypedArray|Date[]|Object[]>} data - Object with column names as keys and arrays as values
+ *   TypedArrays supported: Int32Array, BigInt64Array, Float32Array, Float64Array, Uint8Array, Int8Array, Uint16Array, Int16Array, Uint32Array, BigUint64Array
+ *   For Integer logical types, matching TypedArrays are optimized (e.g., Uint8Array for integer(8,false), Int8Array for integer(8,true))
+ *   Enum logical type: 
+ *   - Pass string arrays normally: ['active', 'inactive', 'pending']
+ *   - Or use efficient index arrays: Define enumValues in schema, then pass indices [0, 1, 2, 0]
+ *   - Index arrays can use TypedArrays (e.g., Uint8Array) for even better performance
+ *   Automatic conversions:
+ *   - Date objects → date/timestamp values (when logicalType is 'date', 'timestamp_millis', etc.)
+ *   - Objects → JSON strings (when logicalType is 'json')
  * @param {Object} [config] - Optional configuration
  * @param {string} [config.compression='snappy'] - Compression: 'snappy' or 'none'
  * @param {number} [config.rowGroupSize=10000] - Rows per row group

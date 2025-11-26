@@ -137,12 +137,55 @@ const formatTime = (ms) => {
   return (ms / 1000).toFixed(2) + ' s';
 };
 
+// Generate enum test data
+const generateEnumTestData = (numRows, useIndexArray, useTypedArray) => {
+  const enumValues = ['active', 'inactive', 'pending', 'archived', 'deleted'];
+  
+  if (useIndexArray) {
+    if (useTypedArray) {
+      // Use Uint8Array for indices
+      const indices = new Uint8Array(numRows);
+      for (let i = 0; i < numRows; i++) {
+        indices[i] = i % enumValues.length;
+      }
+      return {
+        enumValues,
+        status: indices,
+      };
+    } else {
+      // Use regular array for indices
+      const indices = Array.from({ length: numRows }, (_, i) => i % enumValues.length);
+      return {
+        enumValues,
+        status: indices,
+      };
+    }
+  } else {
+    // Use full strings
+    const strings = Array.from({ length: numRows }, (_, i) => enumValues[i % enumValues.length]);
+    return {
+      enumValues: null, // Not needed for string arrays
+      status: strings,
+    };
+  }
+};
+
+// Test enum write performance
+const testEnumWrite = async (data, useIndexArray) => {
+  const schema = useIndexArray
+    ? [{ name: 'status', type: 'string', logicalType: 'enum', enumValues: data.enumValues }]
+    : [{ name: 'status', type: 'string', logicalType: 'enum' }];
+  
+  const bytes = await writeParquet(schema, { status: data.status }, { compression: 'snappy' });
+  return bytes.length;
+};
+
 // Run benchmarks
 const runBenchmarks = async () => {
   const testSizes = [1000, 10000, 100000];
   
   console.log('🚀 Parquet Performance Benchmark\n');
-  console.log('=' .repeat(80));
+  console.log('='.repeat(80));
   
   for (const numRows of testSizes) {
     console.log(`\n📊 Testing with ${numRows.toLocaleString()} rows\n`);
@@ -208,6 +251,103 @@ const runBenchmarks = async () => {
     } catch (err) {
       // Ignore cleanup errors
     }
+  }
+  
+  // Enum performance benchmarks
+  console.log('\n\n📊 ENUM PERFORMANCE BENCHMARK');
+  console.log('='.repeat(80));
+  console.log('Comparing: Full strings vs Index arrays vs TypedArray indices\n');
+  
+  const enumSizes = [10000, 100000, 1000000];
+  
+  for (const numRows of enumSizes) {
+    console.log(`\n📈 Testing with ${numRows.toLocaleString()} enum values\n`);
+    
+    // Test 1: Full strings (include generation time)
+    const stringWrite = await benchmark('Full strings (with generation)', () => {
+      const stringData = generateEnumTestData(numRows, false, false);
+      return testEnumWrite(stringData, false);
+    });
+    
+    // Test 2: Index array (regular array, include generation time)
+    const indexWrite = await benchmark('Index array (with generation)', () => {
+      const indexData = generateEnumTestData(numRows, true, false);
+      return testEnumWrite(indexData, true);
+    });
+    
+    // Test 3: Index array (TypedArray, include generation time)
+    const typedArrayWrite = await benchmark('TypedArray indices (with generation)', () => {
+      const typedArrayData = generateEnumTestData(numRows, true, true);
+      return testEnumWrite(typedArrayData, true);
+    });
+    
+    // Also test without generation time for comparison
+    const stringDataPreGen = generateEnumTestData(numRows, false, false);
+    const indexDataPreGen = generateEnumTestData(numRows, true, false);
+    const typedArrayDataPreGen = generateEnumTestData(numRows, true, true);
+    
+    const stringWriteNoGen = await benchmark('Full strings (write only)', () => 
+      testEnumWrite(stringDataPreGen, false)
+    );
+    
+    const indexWriteNoGen = await benchmark('Index array (write only)', () => 
+      testEnumWrite(indexDataPreGen, true)
+    );
+    
+    const typedArrayWriteNoGen = await benchmark('TypedArray indices (write only)', () => 
+      testEnumWrite(typedArrayDataPreGen, true)
+    );
+    
+    console.log('📝 WRITE PERFORMANCE (including data generation):');
+    console.log('-'.repeat(80));
+    console.log('Full strings:');
+    console.log(`  Time:     ${formatTime(stringWrite.time)}`);
+    console.log(`  Memory:   ${formatBytes(stringWrite.memory)}`);
+    console.log(`  File:     ${formatBytes(stringWrite.result)}`);
+    
+    console.log('\nIndex array:');
+    console.log(`  Time:     ${formatTime(indexWrite.time)}`);
+    console.log(`  Memory:   ${formatBytes(indexWrite.memory)}`);
+    console.log(`  File:     ${formatBytes(indexWrite.result)}`);
+    
+    const indexSpeedup = stringWrite.time / indexWrite.time;
+    const indexSizeReduction = ((stringWrite.result - indexWrite.result) / stringWrite.result * 100).toFixed(1);
+    console.log(`  ⚡ Speedup: ${indexSpeedup.toFixed(2)}x ${indexSpeedup > 1 ? 'faster' : 'slower'}`);
+    console.log(`  📦 Size: ${indexSizeReduction}% ${indexSizeReduction > 0 ? 'smaller' : 'larger'}`);
+    
+    console.log('\nTypedArray indices:');
+    console.log(`  Time:     ${formatTime(typedArrayWrite.time)}`);
+    console.log(`  Memory:   ${formatBytes(typedArrayWrite.memory)}`);
+    console.log(`  File:     ${formatBytes(typedArrayWrite.result)}`);
+    
+    const typedSpeedup = stringWrite.time / typedArrayWrite.time;
+    const typedSizeReduction = ((stringWrite.result - typedArrayWrite.result) / stringWrite.result * 100).toFixed(1);
+    console.log(`  ⚡ Speedup: ${typedSpeedup.toFixed(2)}x ${typedSpeedup > 1 ? 'faster' : 'slower'}`);
+    console.log(`  📦 Size: ${typedSizeReduction}% ${typedSizeReduction > 0 ? 'smaller' : 'larger'}`);
+    
+    console.log('\n\n📝 WRITE PERFORMANCE (write only, data pre-generated):');
+    console.log('-'.repeat(80));
+    console.log('Full strings:');
+    console.log(`  Time:     ${formatTime(stringWriteNoGen.time)}`);
+    console.log(`  Memory:   ${formatBytes(stringWriteNoGen.memory)}`);
+    
+    console.log('\nIndex array:');
+    console.log(`  Time:     ${formatTime(indexWriteNoGen.time)}`);
+    console.log(`  Memory:   ${formatBytes(indexWriteNoGen.memory)}`);
+    
+    const indexSpeedupNoGen = stringWriteNoGen.time / indexWriteNoGen.time;
+    console.log(`  ⚡ Speedup: ${indexSpeedupNoGen.toFixed(2)}x ${indexSpeedupNoGen > 1 ? 'faster' : 'slower'}`);
+    
+    console.log('\nTypedArray indices:');
+    console.log(`  Time:     ${formatTime(typedArrayWriteNoGen.time)}`);
+    console.log(`  Memory:   ${formatBytes(typedArrayWriteNoGen.memory)}`);
+    
+    const typedSpeedupNoGen = stringWriteNoGen.time / typedArrayWriteNoGen.time;
+    console.log(`  ⚡ Speedup: ${typedSpeedupNoGen.toFixed(2)}x ${typedSpeedupNoGen > 1 ? 'faster' : 'slower'}`);
+    
+    // Compare index vs typed array
+    const typedVsIndexSpeedup = indexWriteNoGen.time / typedArrayWriteNoGen.time;
+    console.log(`\n💡 TypedArray vs Index array (write only): ${typedVsIndexSpeedup.toFixed(2)}x ${typedVsIndexSpeedup > 1 ? 'faster' : 'slower'}`);
   }
   
   console.log('\n' + '='.repeat(80));

@@ -4,11 +4,12 @@ use parquet2::{
     metadata::{Descriptor, SchemaDescriptor},
     page::{CompressedPage, DataPage, DataPageHeader, DataPageHeaderV1, Page},
     read::levels::get_bit_width,
-    schema::types::{FieldInfo, ParquetType, PhysicalType, PrimitiveType},
+    schema::types::{FieldInfo, IntegerType, ParquetType, PhysicalType, PrimitiveLogicalType, PrimitiveType, TimeUnit},
     schema::Repetition,
     write::{Compressor, DynIter, DynStreamingIterator, FileWriter, Version, WriteOptions},
 };
 use serde::{Deserialize, Serialize};
+use std::convert::TryFrom;
 use std::io::Cursor;
 use wasm_bindgen::prelude::*;
 
@@ -19,6 +20,21 @@ pub struct ColumnSchema {
     pub col_type: String,
     #[serde(default)]
     pub nullable: bool,
+    #[serde(default, rename = "logicalType", alias = "logical_type")]
+    pub logical_type: Option<String>,
+    // Decimal-specific fields
+    #[serde(default)]
+    pub precision: Option<u8>,
+    #[serde(default)]
+    pub scale: Option<u8>,
+    // Integer-specific fields
+    #[serde(default)]
+    pub bit_width: Option<u8>,
+    #[serde(default)]
+    pub is_signed: Option<bool>,
+    // Enum-specific fields
+    #[serde(default, rename = "enumValues", alias = "enum_values")]
+    pub enum_values: Option<Vec<String>>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -74,12 +90,166 @@ fn get_physical_type(type_name: &str) -> PhysicalType {
     }
 }
 
-fn build_schema_fields(columns: &[ColumnSchema]) -> Vec<ParquetType> {
+fn get_logical_type(
+    logical_type_str: &str,
+    physical_type: PhysicalType,
+    precision: Option<u8>,
+    scale: Option<u8>,
+    bit_width: Option<u8>,
+    is_signed: Option<bool>,
+) -> Option<PrimitiveLogicalType> {
+    match logical_type_str.to_lowercase().as_str() {
+        "date" => {
+            if matches!(physical_type, PhysicalType::Int32) {
+                Some(PrimitiveLogicalType::Date)
+            } else {
+                None
+            }
+        }
+        "time_millis" | "time_milliseconds" => {
+            if matches!(physical_type, PhysicalType::Int32) {
+                Some(PrimitiveLogicalType::Time {
+                    unit: TimeUnit::Milliseconds,
+                    is_adjusted_to_utc: false,
+                })
+            } else {
+                None
+            }
+        }
+        "time_micros" | "time_microseconds" => {
+            if matches!(physical_type, PhysicalType::Int64) {
+                Some(PrimitiveLogicalType::Time {
+                    unit: TimeUnit::Microseconds,
+                    is_adjusted_to_utc: false,
+                })
+            } else {
+                None
+            }
+        }
+        "timestamp_millis" | "timestamp_milliseconds" => {
+            if matches!(physical_type, PhysicalType::Int64) {
+                Some(PrimitiveLogicalType::Timestamp {
+                    unit: TimeUnit::Milliseconds,
+                    is_adjusted_to_utc: false,
+                })
+            } else {
+                None
+            }
+        }
+        "timestamp_micros" | "timestamp_microseconds" => {
+            if matches!(physical_type, PhysicalType::Int64) {
+                Some(PrimitiveLogicalType::Timestamp {
+                    unit: TimeUnit::Microseconds,
+                    is_adjusted_to_utc: false,
+                })
+            } else {
+                None
+            }
+        }
+        "utf8" | "string" => {
+            if matches!(physical_type, PhysicalType::ByteArray) {
+                Some(PrimitiveLogicalType::String)
+            } else {
+                None
+            }
+        }
+        "json" => {
+            if matches!(physical_type, PhysicalType::ByteArray) {
+                Some(PrimitiveLogicalType::Json)
+            } else {
+                None
+            }
+        }
+        "bson" => {
+            if matches!(physical_type, PhysicalType::ByteArray) {
+                Some(PrimitiveLogicalType::Bson)
+            } else {
+                None
+            }
+        }
+        "decimal" => {
+            // Decimal requires precision and scale
+            if let (Some(prec), Some(sc)) = (precision, scale) {
+                match physical_type {
+                    PhysicalType::Int32 | PhysicalType::Int64 | PhysicalType::ByteArray | PhysicalType::FixedLenByteArray(_) => {
+                        Some(PrimitiveLogicalType::Decimal(prec as usize, sc as usize))
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        }
+        "enum" => {
+            if matches!(physical_type, PhysicalType::ByteArray) {
+                Some(PrimitiveLogicalType::Enum)
+            } else {
+                None
+            }
+        }
+        "integer" | "int" => {
+            // Integer requires bit_width and is_signed
+            if let (Some(bw), Some(signed)) = (bit_width, is_signed) {
+                if matches!(physical_type, PhysicalType::Int32 | PhysicalType::Int64) {
+                    let int_type = match (bw, signed) {
+                        (8, true) => IntegerType::Int8,
+                        (8, false) => IntegerType::UInt8,
+                        (16, true) => IntegerType::Int16,
+                        (16, false) => IntegerType::UInt16,
+                        (32, true) => IntegerType::Int32,
+                        (32, false) => IntegerType::UInt32,
+                        (64, true) => IntegerType::Int64,
+                        (64, false) => IntegerType::UInt64,
+                        _ => return None,
+                    };
+                    Some(PrimitiveLogicalType::Integer(int_type))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+        "uuid" => {
+            // UUID requires FixedLenByteArray(16) per Parquet spec
+            // We'll accept ByteArray and convert it, but warn that FixedLenByteArray is preferred
+            if matches!(physical_type, PhysicalType::FixedLenByteArray(16)) {
+                Some(PrimitiveLogicalType::Uuid)
+            } else if matches!(physical_type, PhysicalType::ByteArray) {
+                // Note: Parquet spec prefers FixedLenByteArray(16) for UUID
+                // But we'll allow ByteArray for convenience - users should use FixedLenByteArray for best compatibility
+                None // Don't allow UUID on ByteArray - it causes errors in parquet2
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn build_schema_fields(columns: &[ColumnSchema]) -> Result<Vec<ParquetType>, JsError> {
     columns
         .iter()
         .map(|col| {
             let physical_type = get_physical_type(&col.col_type);
-            ParquetType::PrimitiveType(PrimitiveType {
+            let logical_type = col.logical_type.as_ref()
+                .and_then(|lt| get_logical_type(
+                    lt,
+                    physical_type,
+                    col.precision,
+                    col.scale,
+                    col.bit_width,
+                    col.is_signed,
+                ));
+            
+            // Validate UUID: must use FixedLenByteArray(16), not ByteArray
+            if let Some(lt_str) = col.logical_type.as_ref() {
+                if lt_str.to_lowercase() == "uuid" && matches!(physical_type, PhysicalType::ByteArray) {
+                    return Err(JsError::new("Cannot annotate Uuid from ByteArray. UUID requires FixedLenByteArray(16) per Parquet spec."));
+                }
+            }
+            
+            Ok(ParquetType::PrimitiveType(PrimitiveType {
                 field_info: FieldInfo {
                     name: col.name.clone(),
                     repetition: if col.nullable {
@@ -89,16 +259,25 @@ fn build_schema_fields(columns: &[ColumnSchema]) -> Vec<ParquetType> {
                     },
                     id: None,
                 },
-                logical_type: None,
+                logical_type,
                 converted_type: None,
                 physical_type,
-            })
+            }))
         })
         .collect()
 }
 
 fn create_descriptor(col: &ColumnSchema) -> Descriptor {
     let physical_type = get_physical_type(&col.col_type);
+    let logical_type = col.logical_type.as_ref()
+        .and_then(|lt| get_logical_type(
+            lt,
+            physical_type,
+            col.precision,
+            col.scale,
+            col.bit_width,
+            col.is_signed,
+        ));
     let primitive_type = PrimitiveType {
         field_info: FieldInfo {
             name: col.name.clone(),
@@ -109,7 +288,7 @@ fn create_descriptor(col: &ColumnSchema) -> Descriptor {
             },
             id: None,
         },
-        logical_type: None,
+        logical_type,
         converted_type: None,
         physical_type,
     };
@@ -169,33 +348,330 @@ fn encode_string_column(values: &[String]) -> Vec<u8> {
     bytes
 }
 
+fn convert_date_to_value(
+    date: &js_sys::Date,
+    logical_type: Option<&PrimitiveLogicalType>,
+) -> Result<i64, JsError> {
+    const MILLIS_PER_DAY: i64 = 86_400_000;
+    const MICROS_PER_MILLI: i64 = 1_000;
+    const NANOS_PER_MILLI: i64 = 1_000_000;
+
+    let timestamp_ms = date.get_time() as i64;
+    match logical_type {
+        Some(PrimitiveLogicalType::Date) => {
+            // Days since Unix epoch (UTC)
+            Ok(timestamp_ms.div_euclid(MILLIS_PER_DAY))
+        }
+        Some(PrimitiveLogicalType::Timestamp { unit, .. }) => {
+            match unit {
+                TimeUnit::Milliseconds => Ok(timestamp_ms),
+                TimeUnit::Microseconds => Ok(timestamp_ms * MICROS_PER_MILLI),
+                TimeUnit::Nanoseconds => Ok(timestamp_ms * NANOS_PER_MILLI),
+            }
+        }
+        Some(PrimitiveLogicalType::Time { unit, .. }) => {
+            // Time of day: milliseconds since UTC midnight
+            let total_ms = timestamp_ms.rem_euclid(MILLIS_PER_DAY);
+            match unit {
+                TimeUnit::Milliseconds => Ok(total_ms),
+                TimeUnit::Microseconds => Ok(total_ms * MICROS_PER_MILLI),
+                TimeUnit::Nanoseconds => Ok(total_ms * NANOS_PER_MILLI),
+            }
+        }
+        _ => Err(JsError::new("Date conversion not supported for this logical type")),
+    }
+}
+
+fn convert_js_value_to_target_type(
+    value: &JsValue,
+    physical_type: PhysicalType,
+    logical_type: Option<&PrimitiveLogicalType>,
+) -> Result<JsValue, JsError> {
+    // Check if it's a Date-like object by looking for getTime()
+    if let Some(lt) = logical_type {
+        if let Ok(has_get_time) = js_sys::Reflect::has(value, &JsValue::from_str("getTime")) {
+            if has_get_time {
+                let date_obj = js_sys::Date::from(value.clone());
+                if date_obj.get_time().is_finite() {
+                    match lt {
+                        PrimitiveLogicalType::Date => {
+                            let days = convert_date_to_value(&date_obj, Some(lt))?;
+                            let as_i32 = i32::try_from(days)
+                                .map_err(|_| JsError::new("Date value out of range for INT32"))?;
+                            return Ok(JsValue::from(as_i32));
+                        }
+                        PrimitiveLogicalType::Timestamp { .. } => {
+                            let timestamp = convert_date_to_value(&date_obj, Some(lt))?;
+                            return Ok(JsValue::from_f64(timestamp as f64));
+                        }
+                        PrimitiveLogicalType::Time { .. } => {
+                            let time = convert_date_to_value(&date_obj, Some(lt))?;
+                            return match physical_type {
+                                PhysicalType::Int32 => {
+                                    let as_i32 = i32::try_from(time)
+                                        .map_err(|_| JsError::new("Time value out of range for INT32"))?;
+                                    Ok(JsValue::from(as_i32))
+                                }
+                                PhysicalType::Int64 => Ok(JsValue::from_f64(time as f64)),
+                                _ => Err(JsError::new("Time logical type requires INT32 or INT64 column")),
+                            };
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    
+    // Check if it's an Object and logical type is JSON
+    if let Some(PrimitiveLogicalType::Json) = logical_type {
+        if value.is_object() && !value.is_null() && !value.is_undefined() {
+            // Try to stringify the object
+            let json_str = js_sys::JSON::stringify(value)
+                .map_err(|_| JsError::new("Failed to stringify object to JSON"))?;
+            return Ok(json_str.into());
+        }
+    }
+    
+    // Return as-is if no conversion needed
+    Ok(value.clone())
+}
+
+fn convert_enum_indices_to_strings<I>(
+    enum_values: &[String],
+    indices: I,
+    capacity: usize,
+) -> Result<Vec<String>, JsError>
+where
+    I: IntoIterator<Item = usize>,
+{
+    if enum_values.is_empty() {
+        return Err(JsError::new(
+            "enumValues must contain at least one entry when using index arrays",
+        ));
+    }
+
+    let max_index = enum_values.len() - 1;
+    let mut string_values = Vec::with_capacity(capacity);
+    for idx in indices {
+        let value = enum_values.get(idx).ok_or_else(|| {
+            JsError::new(&format!(
+                "Enum index {} out of range (max: {})",
+                idx, max_index
+            ))
+        })?;
+        string_values.push(value.clone());
+    }
+    Ok(string_values)
+}
+
+fn js_value_to_enum_index(value: &JsValue) -> Result<usize, JsError> {
+    if value.is_null() || value.is_undefined() {
+        return Err(JsError::new(
+            "Enum index array cannot contain null or undefined values",
+        ));
+    }
+
+    let idx_f64 = value
+        .as_f64()
+        .ok_or_else(|| JsError::new("Enum index array must contain only numbers"))?;
+
+    if !idx_f64.is_finite() {
+        return Err(JsError::new("Enum index must be a finite number"));
+    }
+    if idx_f64 < 0.0 {
+        return Err(JsError::new("Enum index must be non-negative"));
+    }
+    if idx_f64.fract() != 0.0 {
+        return Err(JsError::new("Enum index must be an integer value"));
+    }
+
+    let idx = idx_f64 as usize;
+    if (idx as f64) != idx_f64 {
+        return Err(JsError::new(
+            "Enum index is too large to fit on this platform",
+        ));
+    }
+
+    Ok(idx)
+}
+
 fn encode_values_from_js(
     physical_type: PhysicalType,
     values_js: JsValue,
+    logical_type: Option<&PrimitiveLogicalType>,
+    enum_values: Option<&[String]>,
 ) -> Result<Vec<u8>, JsError> {
+    // Check if it's a TypedArray - optimize for Integer logical types
+    if let Some(PrimitiveLogicalType::Integer(int_type)) = logical_type {
+        let (bit_width, is_signed): (usize, bool) = (*int_type).into();
+        
+        // Check constructor name to detect TypedArray type
+        if let Ok(ctor) = js_sys::Reflect::get(&values_js, &JsValue::from_str("constructor")) {
+            if let Ok(ctor_name_js) = js_sys::Reflect::get(&ctor, &JsValue::from_str("name")) {
+                if let Some(ctor_name) = ctor_name_js.as_string() {
+                    match (ctor_name.as_str(), bit_width, is_signed) {
+                        ("Uint8Array", 8, false) => {
+                            let arr = js_sys::Uint8Array::from(values_js.clone());
+                            // Use to_vec() for bulk copy - much faster than get_index() in a loop
+                            let values_u8: Vec<u8> = arr.to_vec();
+                            let values: Vec<i32> = values_u8.into_iter().map(|v| v as i32).collect();
+                            return Ok(encode_int32_column(&values));
+                        }
+                        ("Int8Array", 8, true) => {
+                            let arr = js_sys::Int8Array::from(values_js.clone());
+                            // Use to_vec() for bulk copy
+                            let values_i8: Vec<i8> = arr.to_vec();
+                            let values: Vec<i32> = values_i8.into_iter().map(|v| v as i32).collect();
+                            return Ok(encode_int32_column(&values));
+                        }
+                        ("Uint16Array", 16, false) => {
+                            let arr = js_sys::Uint16Array::from(values_js.clone());
+                            // Use to_vec() for bulk copy
+                            let values_u16: Vec<u16> = arr.to_vec();
+                            let values: Vec<i32> = values_u16.into_iter().map(|v| v as i32).collect();
+                            return Ok(encode_int32_column(&values));
+                        }
+                        ("Int16Array", 16, true) => {
+                            let arr = js_sys::Int16Array::from(values_js.clone());
+                            // Use to_vec() for bulk copy
+                            let values_i16: Vec<i16> = arr.to_vec();
+                            let values: Vec<i32> = values_i16.into_iter().map(|v| v as i32).collect();
+                            return Ok(encode_int32_column(&values));
+                        }
+                        ("Uint32Array", 32, false) => {
+                            let arr = js_sys::Uint32Array::from(values_js.clone());
+                            // Use to_vec() for bulk copy
+                            let values_u32: Vec<u32> = arr.to_vec();
+                            let values: Vec<i32> = values_u32.into_iter().map(|v| v as i32).collect();
+                            return Ok(encode_int32_column(&values));
+                        }
+                        ("Int32Array", 32, true) => {
+                            let arr = js_sys::Int32Array::from(values_js.clone());
+                            // Use to_vec() for bulk copy - zero-copy when possible
+                            let values: Vec<i32> = arr.to_vec();
+                            return Ok(encode_int32_column(&values));
+                        }
+                        ("BigUint64Array", 64, false) => {
+                            let arr = js_sys::BigUint64Array::from(values_js.clone());
+                            let len = arr.length() as usize;
+                            let mut values = Vec::with_capacity(len);
+                            for i in 0..len {
+                                let val = arr.get_index(i as u32);
+                                values.push(val as i64);
+                            }
+                            return Ok(encode_int64_column(&values));
+                        }
+                        ("BigInt64Array", 64, true) => {
+                            let arr = js_sys::BigInt64Array::from(values_js.clone());
+                            let len = arr.length() as usize;
+                            let mut values = Vec::with_capacity(len);
+                            for i in 0..len {
+                                let val = arr.get_index(i as u32);
+                                values.push(val);
+                            }
+                            return Ok(encode_int64_column(&values));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    
+    // Check if this is an enum with index array BEFORE conversion
+    if let Some(PrimitiveLogicalType::Enum) = logical_type {
+        if let Some(enum_vals) = enum_values {
+            // Try to detect TypedArray first (more efficient)
+            if let Ok(ctor) = js_sys::Reflect::get(&values_js, &JsValue::from_str("constructor")) {
+                if let Ok(ctor_name_js) = js_sys::Reflect::get(&ctor, &JsValue::from_str("name")) {
+                    if let Some(ctor_name) = ctor_name_js.as_string() {
+                        match ctor_name.as_str() {
+                            "Uint8Array" => {
+                                let arr = js_sys::Uint8Array::from(values_js.clone());
+                                let len = arr.length() as usize;
+                                let indices = arr.to_vec().into_iter().map(|idx| idx as usize);
+                                let string_values =
+                                    convert_enum_indices_to_strings(enum_vals, indices, len)?;
+                                return Ok(encode_string_column(&string_values));
+                            }
+                            "Uint16Array" => {
+                                let arr = js_sys::Uint16Array::from(values_js.clone());
+                                let len = arr.length() as usize;
+                                let indices = arr.to_vec().into_iter().map(|idx| idx as usize);
+                                let string_values =
+                                    convert_enum_indices_to_strings(enum_vals, indices, len)?;
+                                return Ok(encode_string_column(&string_values));
+                            }
+                            "Uint32Array" => {
+                                let arr = js_sys::Uint32Array::from(values_js.clone());
+                                let len = arr.length() as usize;
+                                let indices = arr.to_vec().into_iter().map(|idx| idx as usize);
+                                let string_values =
+                                    convert_enum_indices_to_strings(enum_vals, indices, len)?;
+                                return Ok(encode_string_column(&string_values));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            
+            // Fallback to regular array detection
+            let arr = js_sys::Array::from(&values_js);
+            if arr.length() > 0 {
+                let first_val = arr.get(0);
+                // Check if first value is a number by trying to convert it
+                if !first_val.is_null() && !first_val.is_undefined() && first_val.as_f64().is_some() {
+                    let len = arr.length() as usize;
+                    let mut indices = Vec::with_capacity(len);
+                    for i in 0..arr.length() {
+                        let idx = js_value_to_enum_index(&arr.get(i))?;
+                        indices.push(idx);
+                    }
+                    let string_values =
+                        convert_enum_indices_to_strings(enum_vals, indices.into_iter(), len)?;
+                    return Ok(encode_string_column(&string_values));
+                }
+            }
+        }
+    }
+    
+    // Convert values array if needed
+    let arr = js_sys::Array::from(&values_js);
+    let converted_values = js_sys::Array::new();
+    
+    for i in 0..arr.length() {
+        let value = arr.get(i);
+        let converted = convert_js_value_to_target_type(&value, physical_type, logical_type)?;
+        converted_values.push(&converted);
+    }
+    
+    let converted_js: JsValue = converted_values.into();
+    
     match physical_type {
         PhysicalType::Int32 => {
-            let values: Vec<i32> = serde_wasm_bindgen::from_value(values_js)?;
+            let values: Vec<i32> = serde_wasm_bindgen::from_value(converted_js)?;
             Ok(encode_int32_column(&values))
         }
         PhysicalType::Int64 => {
-            let values: Vec<i64> = serde_wasm_bindgen::from_value(values_js)?;
+            let values: Vec<i64> = serde_wasm_bindgen::from_value(converted_js)?;
             Ok(encode_int64_column(&values))
         }
         PhysicalType::Float => {
-            let values: Vec<f32> = serde_wasm_bindgen::from_value(values_js)?;
+            let values: Vec<f32> = serde_wasm_bindgen::from_value(converted_js)?;
             Ok(encode_float_column(&values))
         }
         PhysicalType::Double => {
-            let values: Vec<f64> = serde_wasm_bindgen::from_value(values_js)?;
+            let values: Vec<f64> = serde_wasm_bindgen::from_value(converted_js)?;
             Ok(encode_double_column(&values))
         }
         PhysicalType::Boolean => {
-            let values: Vec<bool> = serde_wasm_bindgen::from_value(values_js)?;
+            let values: Vec<bool> = serde_wasm_bindgen::from_value(converted_js)?;
             Ok(encode_boolean_column(&values))
         }
         PhysicalType::ByteArray => {
-            let values: Vec<String> = serde_wasm_bindgen::from_value(values_js)?;
+            let values: Vec<String> = serde_wasm_bindgen::from_value(converted_js)?;
             Ok(encode_string_column(&values))
         }
         _ => Err(JsError::new("Unsupported type")),
@@ -223,6 +699,8 @@ fn process_nullable_column(
     end: u32,
     physical_type: PhysicalType,
     max_def_level: i16,
+    logical_type: Option<&PrimitiveLogicalType>,
+    enum_values: Option<&[String]>,
 ) -> Result<(Vec<u8>, Vec<u8>), JsError> {
     let mut def_levels = Vec::with_capacity((end - start) as usize);
     let values = js_sys::Array::new();
@@ -234,12 +712,14 @@ fn process_nullable_column(
             def_levels.push(0);
         } else {
             def_levels.push(present_level);
-            values.push(&value);
+            // Convert Date/Object before adding to values array
+            let converted = convert_js_value_to_target_type(&value, physical_type, logical_type)?;
+            values.push(&converted);
         }
     }
 
     let values_js: JsValue = values.into();
-    let encoded_data = encode_values_from_js(physical_type, values_js)?;
+    let encoded_data = encode_values_from_js(physical_type, values_js, logical_type, enum_values)?;
     let def_buffer = encode_definition_levels(def_levels, max_def_level)?;
 
     Ok((encoded_data, def_buffer))
@@ -297,7 +777,7 @@ pub fn write_parquet(
     let compression = get_compression(&config.compression);
     
     // Create schema descriptor
-    let fields = build_schema_fields(&columns);
+    let fields = build_schema_fields(&columns)?;
     let schema_descriptor = SchemaDescriptor::new("schema".to_string(), fields);
 
     let version = match config.version.to_lowercase().as_str() {
@@ -343,6 +823,16 @@ pub fn write_parquet(
             
             let descriptor = create_descriptor(col);
             let physical_type = get_physical_type(&col.col_type);
+            let logical_type = col.logical_type.as_ref()
+                .and_then(|lt| get_logical_type(
+                    lt,
+                    physical_type,
+                    col.precision,
+                    col.scale,
+                    col.bit_width,
+                    col.is_signed,
+                ));
+            let enum_values_ref = col.enum_values.as_deref();
             let (encoded_data, def_levels) = if col.nullable {
                 process_nullable_column(
                     &col_arr,
@@ -350,11 +840,13 @@ pub fn write_parquet(
                     end,
                     physical_type,
                     descriptor.max_def_level,
+                    logical_type.as_ref(),
+                    enum_values_ref,
                 )?
             } else {
                 let slice = col_arr.slice(start, end);
                 let slice_value: JsValue = slice.into();
-                (encode_values_from_js(physical_type, slice_value)?, Vec::new())
+                (encode_values_from_js(physical_type, slice_value, logical_type.as_ref(), enum_values_ref)?, Vec::new())
             };
             let definition_levels = if col.nullable {
                 Some(def_levels)
@@ -377,17 +869,16 @@ pub fn write_parquet(
             column_iters.push(Ok(DynStreamingIterator::new(compressor)));
         }
         
-        let row_group = DynIter::new(column_iters.into_iter());
-        
-        writer.write(row_group)
-            .map_err(|e| JsError::new(&format!("Write error: {:?}", e)))?;
+        let row_group_iter = DynIter::new(column_iters.into_iter());
+        writer.write(row_group_iter)
+            .map_err(|e| JsError::new(&format!("Failed to write row group: {:?}", e)))?;
         
         row_offset += rows_in_group;
     }
-
+    
     writer.end(None)
-        .map_err(|e| JsError::new(&format!("End error: {:?}", e)))?;
-
+        .map_err(|e| JsError::new(&format!("Failed to finalize file: {:?}", e)))?;
+    
     Ok(buffer.into_inner())
 }
 

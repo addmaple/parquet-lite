@@ -8,3 +8,4 @@
 export { writeParquet, initWriter, getWriterVersion } from './writer.js';
 export { readParquet, readMetadata, initReader, getReaderVersion } from './reader.js';
 
+
