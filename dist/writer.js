@@ -88,6 +88,7 @@ export async function initWriter(source) {
  * @param {Object} [config] - Optional configuration
  * @param {string} [config.compression='snappy'] - Compression: 'snappy' or 'none'
  * @param {number} [config.rowGroupSize=10000] - Rows per row group
+ * @param {string} [config.version='v1'] - Parquet version: 'v1' (better compatibility) or 'v2' (better compression)
  * @returns {Promise<Uint8Array>} - Parquet file as bytes
  * 
  * @example

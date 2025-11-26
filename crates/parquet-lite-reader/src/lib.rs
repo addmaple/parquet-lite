@@ -1,7 +1,10 @@
 use parquet2::{
-    read::{
-        decompress, get_page_iterator, read_metadata,
+    encoding::{
+        bitpacked,
+        hybrid_rle::{Decoder as HybridRleDecoder, HybridEncoded},
     },
+    page::split_buffer,
+    read::{decompress, get_page_iterator, read_metadata, levels::get_bit_width},
     schema::types::PhysicalType,
     schema::Repetition,
 };
@@ -36,6 +39,172 @@ fn physical_type_to_string(pt: PhysicalType) -> String {
         PhysicalType::FixedLenByteArray(_) => "bytes",
     }
     .to_string()
+}
+
+fn decode_rle_value(bytes: &[u8], bit_width: usize) -> u32 {
+    let mut value = 0u32;
+    for (i, byte) in bytes.iter().enumerate() {
+        value |= (*byte as u32) << (i * 8);
+    }
+    if bit_width >= 32 {
+        value
+    } else {
+        let mask = (1u32 << bit_width) - 1;
+        value & mask
+    }
+}
+
+fn decode_definition_levels(
+    data: &[u8],
+    max_def_level: i16,
+    total_values: usize,
+) -> Result<Option<Vec<u32>>, JsError> {
+    if max_def_level == 0 || total_values == 0 {
+        return Ok(None);
+    }
+
+    let bit_width = get_bit_width(max_def_level);
+    if bit_width == 0 {
+        return Ok(Some(vec![0; total_values]));
+    }
+
+    if data.is_empty() {
+        return Ok(Some(vec![max_def_level as u32; total_values]));
+    }
+
+    let decoder = HybridRleDecoder::new(data, bit_width as usize);
+    let mut levels = Vec::with_capacity(total_values);
+
+    for run in decoder {
+        let run = run
+            .map_err(|e| JsError::new(&format!("Failed to decode definition levels: {:?}", e)))?;
+        match run {
+            HybridEncoded::Bitpacked(values) => {
+                let remaining = total_values - levels.len();
+                if remaining == 0 {
+                    break;
+                }
+                let mut iter = bitpacked::Decoder::<u32>::try_new(values, bit_width as usize, remaining)
+                    .map_err(|e| {
+                        JsError::new(&format!(
+                            "Failed to decode bitpacked definition levels: {:?}",
+                            e
+                        ))
+                    })?;
+                levels.extend(iter.by_ref().take(remaining));
+            }
+            HybridEncoded::Rle(bytes, run_len) => {
+                let value = decode_rle_value(bytes, bit_width as usize);
+                let take = run_len.min(total_values - levels.len());
+                levels.extend(std::iter::repeat_n(value, take));
+            }
+        }
+
+        if levels.len() >= total_values {
+            break;
+        }
+    }
+
+    if levels.len() < total_values {
+        levels.resize(total_values, max_def_level as u32);
+    }
+
+    Ok(Some(levels))
+}
+
+fn append_values_with_nulls<I>(
+    target: &js_sys::Array,
+    def_levels: Option<&[u32]>,
+    max_def_level: i16,
+    mut values: I,
+) -> Result<(), JsError>
+where
+    I: Iterator<Item = JsValue>,
+{
+    if let Some(levels) = def_levels {
+        let present_level = max_def_level as u32;
+        for &level in levels {
+            if level == present_level {
+                let value = values
+                    .next()
+                    .ok_or_else(|| JsError::new("Missing value for definition level"))?;
+                target.push(&value);
+            } else {
+                target.push(&JsValue::NULL);
+            }
+        }
+
+        if values.next().is_some() {
+            return Err(JsError::new(
+                "Too many values provided for definition levels",
+            ));
+        }
+    } else {
+        for value in values {
+            target.push(&value);
+        }
+    }
+
+    Ok(())
+}
+
+fn decode_fixed_width_values<T, F>(
+    buffer: &[u8],
+    count: usize,
+    width: usize,
+    mut convert: F,
+) -> Result<Vec<T>, JsError>
+where
+    F: FnMut(&[u8]) -> T,
+{
+    let mut offset = 0;
+    let mut result = Vec::with_capacity(count);
+    for _ in 0..count {
+        if offset + width > buffer.len() {
+            return Err(JsError::new("Unexpected end of buffer while decoding values"));
+        }
+        let value = convert(&buffer[offset..offset + width]);
+        result.push(value);
+        offset += width;
+    }
+    Ok(result)
+}
+
+fn decode_boolean_values(buffer: &[u8], count: usize) -> Result<Vec<bool>, JsError> {
+    let mut result = Vec::with_capacity(count);
+    for i in 0..count {
+        let byte_idx = i / 8;
+        let bit_idx = i % 8;
+        if byte_idx >= buffer.len() {
+            return Err(JsError::new("Unexpected end of buffer while decoding booleans"));
+        }
+        let value = (buffer[byte_idx] >> bit_idx) & 1 == 1;
+        result.push(value);
+    }
+    Ok(result)
+}
+
+fn decode_binary_values(buffer: &[u8], count: usize) -> Result<Vec<String>, JsError> {
+    let mut offset = 0;
+    let mut result = Vec::with_capacity(count);
+    for _ in 0..count {
+        if offset + 4 > buffer.len() {
+            return Err(JsError::new(
+                "Unexpected end of buffer while decoding byte array length",
+            ));
+        }
+        let len = u32::from_le_bytes(buffer[offset..offset + 4].try_into().unwrap()) as usize;
+        offset += 4;
+        if offset + len > buffer.len() {
+            return Err(JsError::new(
+                "Unexpected end of buffer while decoding byte array value",
+            ));
+        }
+        let value = String::from_utf8_lossy(&buffer[offset..offset + len]).to_string();
+        result.push(value);
+        offset += len;
+    }
+    Ok(result)
 }
 
 /// Read metadata from a Parquet file
@@ -137,60 +306,103 @@ pub fn read_parquet(data: &[u8], columns: Option<Vec<String>>) -> Result<JsValue
                         _ => continue,
                     };
 
-                    let buffer = data_page.buffer();
+                    let descriptor = data_page.descriptor.clone();
+                    let (_, def_levels, values_buffer) = split_buffer(&data_page)
+                        .map_err(|e| JsError::new(&format!("Failed to parse page buffer: {:?}", e)))?;
+
+                    let definition_levels = decode_definition_levels(
+                        def_levels,
+                        descriptor.max_def_level,
+                        data_page.num_values(),
+                    )?;
+
+                    let present_level = descriptor.max_def_level as u32;
+                    let present_values = definition_levels
+                        .as_ref()
+                        .map(|levels| {
+                            levels
+                                .iter()
+                                .filter(|&&level| level == present_level)
+                                .count()
+                        })
+                        .unwrap_or(data_page.num_values());
                     
                     match primitive_type.physical_type {
                         PhysicalType::Int32 => {
-                            for chunk in buffer.chunks_exact(4) {
-                                let value = i32::from_le_bytes(chunk.try_into().unwrap());
-                                values_array.push(&JsValue::from(value));
-                            }
+                            let values = decode_fixed_width_values(
+                                values_buffer,
+                                present_values,
+                                4,
+                                |chunk| i32::from_le_bytes(chunk.try_into().unwrap()),
+                            )?;
+                            append_values_with_nulls(
+                                &values_array,
+                                definition_levels.as_deref(),
+                                descriptor.max_def_level,
+                                values.into_iter().map(JsValue::from),
+                            )?;
                         }
                         PhysicalType::Int64 => {
-                            for chunk in buffer.chunks_exact(8) {
-                                let value = i64::from_le_bytes(chunk.try_into().unwrap());
-                                values_array.push(&JsValue::from(value as f64));
-                            }
+                            let values = decode_fixed_width_values(
+                                values_buffer,
+                                present_values,
+                                8,
+                                |chunk| i64::from_le_bytes(chunk.try_into().unwrap()),
+                            )?;
+                            append_values_with_nulls(
+                                &values_array,
+                                definition_levels.as_deref(),
+                                descriptor.max_def_level,
+                                values.into_iter().map(|v| JsValue::from(v as f64)),
+                            )?;
                         }
                         PhysicalType::Float => {
-                            for chunk in buffer.chunks_exact(4) {
-                                let value = f32::from_le_bytes(chunk.try_into().unwrap());
-                                values_array.push(&JsValue::from(value));
-                            }
+                            let values = decode_fixed_width_values(
+                                values_buffer,
+                                present_values,
+                                4,
+                                |chunk| f32::from_le_bytes(chunk.try_into().unwrap()),
+                            )?;
+                            append_values_with_nulls(
+                                &values_array,
+                                definition_levels.as_deref(),
+                                descriptor.max_def_level,
+                                values.into_iter().map(JsValue::from),
+                            )?;
                         }
                         PhysicalType::Double => {
-                            for chunk in buffer.chunks_exact(8) {
-                                let value = f64::from_le_bytes(chunk.try_into().unwrap());
-                                values_array.push(&JsValue::from(value));
-                            }
+                            let values = decode_fixed_width_values(
+                                values_buffer,
+                                present_values,
+                                8,
+                                |chunk| f64::from_le_bytes(chunk.try_into().unwrap()),
+                            )?;
+                            append_values_with_nulls(
+                                &values_array,
+                                definition_levels.as_deref(),
+                                descriptor.max_def_level,
+                                values.into_iter().map(JsValue::from),
+                            )?;
                         }
                         PhysicalType::Boolean => {
-                            // Parquet uses bit-packed booleans
-                            let num_values = data_page.num_values();
-                            for i in 0..num_values {
-                                let byte_idx = i / 8;
-                                let bit_idx = i % 8;
-                                if byte_idx < buffer.len() {
-                                    let value = (buffer[byte_idx] >> bit_idx) & 1 == 1;
-                                    values_array.push(&JsValue::from(value));
-                                }
-                            }
+                            let values = decode_boolean_values(values_buffer, present_values)?;
+                            append_values_with_nulls(
+                                &values_array,
+                                definition_levels.as_deref(),
+                                descriptor.max_def_level,
+                                values.into_iter().map(JsValue::from),
+                            )?;
                         }
                         PhysicalType::ByteArray => {
-                            let mut offset = 0;
-                            while offset + 4 <= buffer.len() {
-                                let len = u32::from_le_bytes(
-                                    buffer[offset..offset + 4].try_into().unwrap(),
-                                ) as usize;
-                                offset += 4;
-                                if offset + len <= buffer.len() {
-                                    let s = String::from_utf8_lossy(&buffer[offset..offset + len]);
-                                    values_array.push(&JsValue::from_str(&s));
-                                    offset += len;
-                                } else {
-                                    break;
-                                }
-                            }
+                            let values = decode_binary_values(values_buffer, present_values)?;
+                            append_values_with_nulls(
+                                &values_array,
+                                definition_levels.as_deref(),
+                                descriptor.max_def_level,
+                                values
+                                    .into_iter()
+                                    .map(|v| JsValue::from_str(&v)),
+                            )?;
                         }
                         _ => {}
                     }

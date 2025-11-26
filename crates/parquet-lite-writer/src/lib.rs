@@ -1,14 +1,12 @@
 use parquet2::{
     compression::CompressionOptions,
-    encoding::Encoding,
+    encoding::{hybrid_rle, Encoding},
     metadata::{Descriptor, SchemaDescriptor},
-    page::{DataPage, DataPageHeader, DataPageHeaderV1, Page, CompressedPage},
-    schema::types::{ParquetType, PhysicalType, PrimitiveType, FieldInfo},
+    page::{CompressedPage, DataPage, DataPageHeader, DataPageHeaderV1, Page},
+    read::levels::get_bit_width,
+    schema::types::{FieldInfo, ParquetType, PhysicalType, PrimitiveType},
     schema::Repetition,
-    write::{
-        DynIter, DynStreamingIterator, FileWriter, Version,
-        WriteOptions, Compressor,
-    },
+    write::{Compressor, DynIter, DynStreamingIterator, FileWriter, Version, WriteOptions},
 };
 use serde::{Deserialize, Serialize};
 use std::io::Cursor;
@@ -29,6 +27,8 @@ pub struct WriteConfig {
     pub compression: String,
     #[serde(default = "default_row_group_size")]
     pub row_group_size: usize,
+    #[serde(default = "default_version")]
+    pub version: String,
 }
 
 fn default_compression() -> String {
@@ -39,11 +39,16 @@ fn default_row_group_size() -> usize {
     10000
 }
 
+fn default_version() -> String {
+    "v1".to_string()
+}
+
 impl Default for WriteConfig {
     fn default() -> Self {
         Self {
             compression: default_compression(),
             row_group_size: default_row_group_size(),
+            version: default_version(),
         }
     }
 }
@@ -164,25 +169,111 @@ fn encode_string_column(values: &[String]) -> Vec<u8> {
     bytes
 }
 
+fn encode_values_from_js(
+    physical_type: PhysicalType,
+    values_js: JsValue,
+) -> Result<Vec<u8>, JsError> {
+    match physical_type {
+        PhysicalType::Int32 => {
+            let values: Vec<i32> = serde_wasm_bindgen::from_value(values_js)?;
+            Ok(encode_int32_column(&values))
+        }
+        PhysicalType::Int64 => {
+            let values: Vec<i64> = serde_wasm_bindgen::from_value(values_js)?;
+            Ok(encode_int64_column(&values))
+        }
+        PhysicalType::Float => {
+            let values: Vec<f32> = serde_wasm_bindgen::from_value(values_js)?;
+            Ok(encode_float_column(&values))
+        }
+        PhysicalType::Double => {
+            let values: Vec<f64> = serde_wasm_bindgen::from_value(values_js)?;
+            Ok(encode_double_column(&values))
+        }
+        PhysicalType::Boolean => {
+            let values: Vec<bool> = serde_wasm_bindgen::from_value(values_js)?;
+            Ok(encode_boolean_column(&values))
+        }
+        PhysicalType::ByteArray => {
+            let values: Vec<String> = serde_wasm_bindgen::from_value(values_js)?;
+            Ok(encode_string_column(&values))
+        }
+        _ => Err(JsError::new("Unsupported type")),
+    }
+}
+
+fn encode_definition_levels(
+    def_levels: Vec<u32>,
+    max_def_level: i16,
+) -> Result<Vec<u8>, JsError> {
+    let bit_width = get_bit_width(max_def_level);
+    let mut encoded = Vec::new();
+    hybrid_rle::encode_u32(&mut encoded, def_levels.into_iter(), bit_width)
+        .map_err(|e| JsError::new(&format!("Failed to encode definition levels: {e}")))?;
+    Ok(encoded)
+}
+
+fn is_null(value: &JsValue) -> bool {
+    value.is_null() || value.is_undefined()
+}
+
+fn process_nullable_column(
+    col_arr: &js_sys::Array,
+    start: u32,
+    end: u32,
+    physical_type: PhysicalType,
+    max_def_level: i16,
+) -> Result<(Vec<u8>, Vec<u8>), JsError> {
+    let mut def_levels = Vec::with_capacity((end - start) as usize);
+    let values = js_sys::Array::new();
+    let present_level = max_def_level as u32;
+
+    for idx in start..end {
+        let value = col_arr.get(idx);
+        if is_null(&value) {
+            def_levels.push(0);
+        } else {
+            def_levels.push(present_level);
+            values.push(&value);
+        }
+    }
+
+    let values_js: JsValue = values.into();
+    let encoded_data = encode_values_from_js(physical_type, values_js)?;
+    let def_buffer = encode_definition_levels(def_levels, max_def_level)?;
+
+    Ok((encoded_data, def_buffer))
+}
+
 fn create_data_page(
     encoded_data: Vec<u8>,
-    num_values: usize,
+    definition_levels: Option<Vec<u8>>,
+    num_rows: usize,
     descriptor: Descriptor,
 ) -> DataPage {
+    let mut buffer = Vec::new();
+
+    if descriptor.max_def_level > 0 {
+        let def_levels = definition_levels.unwrap_or_default();
+        buffer.extend_from_slice(&(def_levels.len() as u32).to_le_bytes());
+        buffer.extend_from_slice(&def_levels);
+    }
+
+    buffer.extend_from_slice(&encoded_data);
+
     let header = DataPageHeader::V1(DataPageHeaderV1 {
-        num_values: num_values as i32,
+        num_values: num_rows as i32,
         encoding: Encoding::Plain.into(),
-        definition_level_encoding: Encoding::Plain.into(),
-        repetition_level_encoding: Encoding::Plain.into(),
+        definition_level_encoding: if descriptor.max_def_level > 0 {
+            Encoding::Rle.into()
+        } else {
+            Encoding::Plain.into()
+        },
+        repetition_level_encoding: Encoding::Rle.into(),
         statistics: None,
     });
 
-    DataPage::new(
-        header,
-        encoded_data,
-        descriptor,
-        Some(num_values),
-    )
+    DataPage::new(header, buffer, descriptor, Some(num_rows))
 }
 
 /// Write data to Parquet format
@@ -209,9 +300,15 @@ pub fn write_parquet(
     let fields = build_schema_fields(&columns);
     let schema_descriptor = SchemaDescriptor::new("schema".to_string(), fields);
 
+    let version = match config.version.to_lowercase().as_str() {
+        "v1" | "1" => Version::V1,
+        "v2" | "2" => Version::V2,
+        _ => Version::V1, // Default to V1 for compatibility
+    };
+    
     let options = WriteOptions {
         write_statistics: false,
-        version: Version::V2,
+        version,
     };
 
     let mut buffer = Cursor::new(Vec::new());
@@ -241,44 +338,36 @@ pub fn write_parquet(
                 .map_err(|_| JsError::new(&format!("Failed to get column: {}", col.name)))?;
             let col_arr = js_sys::Array::from(&col_data);
             
-            // Slice the data for this row group
             let start = row_offset as u32;
             let end = (row_offset + rows_in_group) as u32;
-            let slice = col_arr.slice(start, end);
-            let slice_value: JsValue = slice.into();
             
             let descriptor = create_descriptor(col);
             let physical_type = get_physical_type(&col.col_type);
-            
-            let encoded_data = match physical_type {
-                PhysicalType::Int32 => {
-                    let values: Vec<i32> = serde_wasm_bindgen::from_value(slice_value)?;
-                    encode_int32_column(&values)
-                }
-                PhysicalType::Int64 => {
-                    let values: Vec<i64> = serde_wasm_bindgen::from_value(slice_value)?;
-                    encode_int64_column(&values)
-                }
-                PhysicalType::Float => {
-                    let values: Vec<f32> = serde_wasm_bindgen::from_value(slice_value)?;
-                    encode_float_column(&values)
-                }
-                PhysicalType::Double => {
-                    let values: Vec<f64> = serde_wasm_bindgen::from_value(slice_value)?;
-                    encode_double_column(&values)
-                }
-                PhysicalType::Boolean => {
-                    let values: Vec<bool> = serde_wasm_bindgen::from_value(slice_value)?;
-                    encode_boolean_column(&values)
-                }
-                PhysicalType::ByteArray => {
-                    let values: Vec<String> = serde_wasm_bindgen::from_value(slice_value)?;
-                    encode_string_column(&values)
-                }
-                _ => return Err(JsError::new("Unsupported type")),
+            let (encoded_data, def_levels) = if col.nullable {
+                process_nullable_column(
+                    &col_arr,
+                    start,
+                    end,
+                    physical_type,
+                    descriptor.max_def_level,
+                )?
+            } else {
+                let slice = col_arr.slice(start, end);
+                let slice_value: JsValue = slice.into();
+                (encode_values_from_js(physical_type, slice_value)?, Vec::new())
+            };
+            let definition_levels = if col.nullable {
+                Some(def_levels)
+            } else {
+                None
             };
 
-            let page = create_data_page(encoded_data, rows_in_group, descriptor);
+            let page = create_data_page(
+                encoded_data,
+                definition_levels,
+                rows_in_group,
+                descriptor,
+            );
             
             // Compress the page and create an iterator
             let pages = vec![Ok(Page::Data(page))];

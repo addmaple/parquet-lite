@@ -13,6 +13,7 @@ A lightweight JavaScript library for reading and writing Parquet files, powered 
 - **Browser & Node.js**: Works in modern browsers and Node.js 18+
 - **Bundler-friendly**: Works with Vite, Webpack, Rollup, etc.
 - **Pure ESM**: Native ES modules
+- **Nullable columns**: Optional schema fields preserve `null` values end-to-end
 
 ## Size Comparison
 
@@ -84,6 +85,18 @@ a.click();
 import { writeFileSync } from 'fs';
 writeFileSync('data.parquet', bytes);
 ```
+
+**Configuration Options:**
+- `compression`: `'snappy'` (default) or `'none'`
+- `rowGroupSize`: Number of rows per row group (default: `10000`)
+- `version`: `'v1'` (default, better compatibility with parquetjs) or `'v2'` (better compression, more efficient)
+
+**Type Safety:** The library performs strict type checking. If you pass incorrect types, it will throw descriptive errors:
+- `Error: invalid type: string "not", expected i32` - Wrong type in column (e.g., strings in numeric columns)
+- `Error: invalid type: JsValue(Object({...})), expected a string` - Complex objects/arrays not supported
+- `Error: invalid type: unit value, expected i32` - Null/undefined in non-nullable column
+- `Error: Failed to get column: <name>` - Missing column or non-array value
+- All columns must have the same array length
 
 ### Reading Parquet
 
