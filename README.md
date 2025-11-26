@@ -1,4 +1,4 @@
-# parquet-lite
+# @addmaple/parquet-lite
 
 A lightweight JavaScript library for reading and writing Parquet files, powered by Rust compiled to WebAssembly.
 
@@ -13,7 +13,7 @@ A lightweight JavaScript library for reading and writing Parquet files, powered 
 ## Installation
 
 ```bash
-npm install parquet-lite
+npm install @addmaple/parquet-lite
 ```
 
 ## Quick Start
@@ -21,7 +21,7 @@ npm install parquet-lite
 ### Writing Parquet
 
 ```javascript
-import { writeParquet } from 'parquet-lite/writer';
+import { writeParquet } from '@addmaple/parquet-lite/writer';
 
 const schema = [
   { name: 'id', type: 'int32' },
@@ -53,7 +53,7 @@ writeFileSync('data.parquet', bytes);
 ### Reading Parquet
 
 ```javascript
-import { readParquet, readMetadata } from 'parquet-lite/reader';
+import { readParquet, readMetadata } from '@addmaple/parquet-lite/reader';
 
 // Get metadata
 const metadata = await readMetadata(bytes);
@@ -77,14 +77,14 @@ The library uses `import.meta.url` for WASM resolution, which works with most mo
 Works out of the box. Vite handles WASM files automatically.
 
 ```javascript
-import { writeParquet } from 'parquet-lite/writer';
+import { writeParquet } from '@addmaple/parquet-lite/writer';
 ```
 
 If you need more control, use explicit WASM loading:
 
 ```javascript
-import { initWriter, writeParquet } from 'parquet-lite/writer';
-import wasmUrl from 'parquet-lite/dist/wasm-writer/parquet_lite_writer_bg.wasm?url';
+import { initWriter, writeParquet } from '@addmaple/parquet-lite/writer';
+import wasmUrl from '@addmaple/parquet-lite/dist/wasm-writer/parquet_lite_writer_bg.wasm?url';
 
 await initWriter(fetch(wasmUrl));
 const bytes = await writeParquet(schema, data);
@@ -121,7 +121,7 @@ export default {
 For full control, you can provide WASM bytes directly:
 
 ```javascript
-import { initWriter, writeParquet } from 'parquet-lite/writer';
+import { initWriter, writeParquet } from '@addmaple/parquet-lite/writer';
 
 // Fetch or load WASM however you need
 const wasmResponse = await fetch('/path/to/parquet_lite_writer_bg.wasm');
@@ -135,7 +135,7 @@ const bytes = await writeParquet(schema, data);
 ### Writer
 
 ```javascript
-import { writeParquet, initWriter, getWriterVersion } from 'parquet-lite/writer';
+import { writeParquet, initWriter, getWriterVersion } from '@addmaple/parquet-lite/writer';
 
 // Initialize (optional, called automatically)
 await initWriter(wasmSource?);
@@ -153,7 +153,7 @@ const bytes = await writeParquet(schema, data, config?);
 ### Reader
 
 ```javascript
-import { readParquet, readMetadata, initReader, getReaderVersion } from 'parquet-lite/reader';
+import { readParquet, readMetadata, initReader, getReaderVersion } from '@addmaple/parquet-lite/reader';
 
 // Initialize (optional, called automatically)
 await initReader(wasmSource?);
