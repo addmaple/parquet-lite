@@ -117,24 +117,33 @@ fn create_descriptor(col: &ColumnSchema) -> Descriptor {
 }
 
 fn encode_int32_column(values: &[i32]) -> Vec<u8> {
-    values.iter().flat_map(|v| v.to_le_bytes()).collect()
+    // Pre-allocate exact size for better performance
+    let mut bytes = Vec::with_capacity(values.len() * 4);
+    bytes.extend(values.iter().flat_map(|v| v.to_le_bytes()));
+    bytes
 }
 
 fn encode_int64_column(values: &[i64]) -> Vec<u8> {
-    values.iter().flat_map(|v| v.to_le_bytes()).collect()
+    let mut bytes = Vec::with_capacity(values.len() * 8);
+    bytes.extend(values.iter().flat_map(|v| v.to_le_bytes()));
+    bytes
 }
 
 fn encode_float_column(values: &[f32]) -> Vec<u8> {
-    values.iter().flat_map(|v| v.to_le_bytes()).collect()
+    let mut bytes = Vec::with_capacity(values.len() * 4);
+    bytes.extend(values.iter().flat_map(|v| v.to_le_bytes()));
+    bytes
 }
 
 fn encode_double_column(values: &[f64]) -> Vec<u8> {
-    values.iter().flat_map(|v| v.to_le_bytes()).collect()
+    let mut bytes = Vec::with_capacity(values.len() * 8);
+    bytes.extend(values.iter().flat_map(|v| v.to_le_bytes()));
+    bytes
 }
 
 fn encode_boolean_column(values: &[bool]) -> Vec<u8> {
     // Parquet uses bit-packed booleans
-    let mut bytes = vec![0u8; (values.len() + 7) / 8];
+    let mut bytes = vec![0u8; values.len().div_ceil(8)];
     for (i, &v) in values.iter().enumerate() {
         if v {
             bytes[i / 8] |= 1 << (i % 8);
@@ -144,7 +153,9 @@ fn encode_boolean_column(values: &[bool]) -> Vec<u8> {
 }
 
 fn encode_string_column(values: &[String]) -> Vec<u8> {
-    let mut bytes = Vec::new();
+    // Pre-allocate capacity: 4 bytes per length + average string size
+    let estimated_size = values.len() * 4 + values.iter().map(|s| s.len()).sum::<usize>();
+    let mut bytes = Vec::with_capacity(estimated_size);
     for s in values {
         let s_bytes = s.as_bytes();
         bytes.extend_from_slice(&(s_bytes.len() as u32).to_le_bytes());
@@ -188,7 +199,7 @@ pub fn write_parquet(
 ) -> Result<Vec<u8>, JsError> {
     let columns: Vec<ColumnSchema> = serde_wasm_bindgen::from_value(schema_js)?;
     let config: WriteConfig = config_js
-        .map(|c| serde_wasm_bindgen::from_value(c))
+        .map(serde_wasm_bindgen::from_value)
         .transpose()?
         .unwrap_or_default();
 
@@ -212,7 +223,7 @@ pub fn write_parquet(
 
     // Determine number of rows from first column
     let first_col = &columns[0];
-    let first_data = js_sys::Reflect::get(&data_obj, &JsValue::from_str(&first_col.name))
+    let first_data = js_sys::Reflect::get(data_obj, &JsValue::from_str(&first_col.name))
         .map_err(|_| JsError::new("Failed to get column data"))?;
     let first_arr = js_sys::Array::from(&first_data);
     let total_rows = first_arr.length() as usize;
@@ -226,7 +237,7 @@ pub fn write_parquet(
         let mut column_iters: Vec<Result<DynStreamingIterator<'static, CompressedPage, parquet2::error::Error>, parquet2::error::Error>> = Vec::new();
         
         for col in &columns {
-            let col_data = js_sys::Reflect::get(&data_obj, &JsValue::from_str(&col.name))
+            let col_data = js_sys::Reflect::get(data_obj, &JsValue::from_str(&col.name))
                 .map_err(|_| JsError::new(&format!("Failed to get column: {}", col.name)))?;
             let col_arr = js_sys::Array::from(&col_data);
             

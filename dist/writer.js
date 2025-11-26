@@ -83,7 +83,8 @@ export async function initWriter(source) {
  * 
  * @param {Array<{name: string, type: string, nullable?: boolean}>} schema - Column definitions
  *   Supported types: 'int32', 'int64', 'float', 'double', 'boolean', 'string'
- * @param {Object<string, Array>} data - Object with column names as keys and arrays as values
+ * @param {Object<string, Array|TypedArray>} data - Object with column names as keys and arrays or TypedArrays as values
+ *   TypedArrays supported: Int32Array, BigInt64Array, Float32Array, Float64Array
  * @param {Object} [config] - Optional configuration
  * @param {string} [config.compression='snappy'] - Compression: 'snappy' or 'none'
  * @param {number} [config.rowGroupSize=10000] - Rows per row group

@@ -1,5 +1,9 @@
 # @addmaple/parquet-lite
 
+**Disclaimer:** This project was created entirely with Anthropic Opus 4.5 and Cursor Composer. There is not much logic - we are making use of the efficient rust toolchain and the parquet2 crate.
+
+---
+
 A lightweight JavaScript library for reading and writing Parquet files, powered by Rust compiled to WebAssembly.
 
 ## Features
@@ -16,10 +20,30 @@ A lightweight JavaScript library for reading and writing Parquet files, powered 
 |---------|-------------|----------------|-------|
 | **@addmaple/parquet-lite** | **167.5 KB** | Reader: 162 KB<br>Writer: 233 KB<br>Total: **395 KB** | Separate reader/writer modules |
 | **parquet-wasm** | **5.9 MB** | ~1.2 MB (brotli) | Includes Apache Arrow, all compression codecs |
-| **parquetjs** | **38.3 KB** | 219 KB unpacked | Pure JS, no WASM, slower |
-| **hyparquet** | ~9.7 KB | ~9.7 KB (gzipped) | Read-only, pure JS |
+| **parquetjs** | **38.3 KB** (tarball)<br>**4.6 MB** (with deps) | 219 KB unpacked<br>~4.6 MB installed | Pure JS, no WASM, slower, read & write |
+| **hyparquet** | **46.5 KB** | 184.5 KB unpacked | Read-only, pure JS, no deps |
 
-**Note:** `parquetjs` does support Snappy compression (via `snappyjs` dependency), but the 38.3 KB package size seems suspiciously small - it may not include all dependencies or may have limitations. The unpacked size of 219 KB is more realistic for a full implementation.
+**Note:** `parquetjs` does support Snappy compression (via `snappyjs` dependency). The 38.3 KB is the compressed tarball size, but the actual installed size with all dependencies is **~4.6 MB** (including `brotli` 1.5MB, `thrift` 444KB, `snappyjs` 100KB, and others). The unpacked package size of 219 KB is just the library code without dependencies.
+
+### Performance Comparison
+
+Benchmark results comparing `@addmaple/parquet-lite` vs `parquetjs` (Node.js v22):
+
+| Rows | Operation | @addmaple/parquet-lite | parquetjs | Speedup |
+|------|-----------|------------------------|-----------|---------|
+| 1,000 | Write | 20.57 ms | 15.61 ms | 0.76x |
+| 1,000 | Read | 4.78 ms | 4.74 ms | 0.99x |
+| 10,000 | Write | 6.74 ms | 78.78 ms | **11.68x faster** |
+| 10,000 | Read | 4.18 ms | 16.02 ms | **3.84x faster** |
+| 100,000 | Write | 56.04 ms | 730.66 ms | **13.04x faster** |
+| 100,000 | Read | 50.91 ms | 89.09 ms | **1.75x faster** |
+
+**Key findings:**
+- **WASM performance scales better** - Significant speedups at larger dataset sizes
+- **Smaller file sizes** - Better compression (e.g., 2.1 MB vs 3.15 MB for 100k rows)
+- **Lower memory usage** - More efficient memory footprint for reads
+
+Run benchmarks yourself: `npm run benchmark`
 
 ## Installation
 
@@ -66,6 +90,10 @@ writeFileSync('data.parquet', bytes);
 ```javascript
 import { readParquet, readMetadata } from '@addmaple/parquet-lite/reader';
 
+// Read from file (Node.js)
+import { readFileSync } from 'fs';
+const bytes = readFileSync('data.parquet');
+
 // Get metadata
 const metadata = await readMetadata(bytes);
 console.log(`${metadata.num_rows} rows, ${metadata.columns.length} columns`);
@@ -77,6 +105,12 @@ console.log(data.name);  // ['Alice', 'Bob', 'Charlie']
 
 // Read specific columns only
 const partial = await readParquet(bytes, ['id', 'name']);
+
+// Read from fetch (Browser)
+const response = await fetch('data.parquet');
+const arrayBuffer = await response.arrayBuffer();
+const browserBytes = new Uint8Array(arrayBuffer);
+const browserData = await readParquet(browserBytes);
 ```
 
 ## Bundler Setup
@@ -182,12 +216,18 @@ const data = await readParquet(bytes, columns?);
 
 | Type | JavaScript | Description |
 |------|------------|-------------|
-| `int32` | `number` | 32-bit signed integer |
-| `int64` | `number` | 64-bit integer (precision loss for large values) |
-| `float` | `number` | 32-bit float |
-| `double` | `number` | 64-bit float |
+| `int32` | `number` or `Int32Array` | 32-bit signed integer |
+| `int64` | `number` or `BigInt64Array` | 64-bit integer (precision loss for large values) |
+| `float` | `number` or `Float32Array` | 32-bit float |
+| `double` | `number` or `Float64Array` | 64-bit float |
 | `boolean` | `boolean` | True/false |
 | `string` | `string` | UTF-8 text |
+
+**Note:** TypedArrays are supported and can be more efficient for large datasets:
+- `Int32Array` for `int32`
+- `BigInt64Array` for `int64`
+- `Float32Array` for `float`
+- `Float64Array` for `double`
 
 ## Building from Source
 
@@ -205,7 +245,3 @@ cargo test && npm test
 ## License
 
 MIT
-
----
-
-**Disclaimer:** This project was created entirely with Anthropic Opus 4.5 and Cursor Composer.
