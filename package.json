@@ -1,6 +1,6 @@
 {
   "name": "@addmaple/parquet-lite",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Lightweight Parquet reader/writer using Rust compiled to WebAssembly",
   "type": "module",
   "main": "./dist/index.js",

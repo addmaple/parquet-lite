@@ -1,0 +1,11 @@
+# Include dist directory and all its contents (override .gitignore)
+!dist/
+!dist/**
+
+# Exclude everything else that's gitignored
+node_modules/
+target/
+pkg/
+test-vite/
+*.log
+
