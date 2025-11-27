@@ -381,6 +381,11 @@ function __wbg_get_imports() {
         const ret = BigInt.asUintN(64, arg0);
         return ret;
     };
+    imports.wbg.__wbindgen_cast_9ae0607507abb057 = function(arg0) {
+        // Cast intrinsic for `I64 -> Externref`.
+        const ret = arg0;
+        return ret;
+    };
     imports.wbg.__wbindgen_cast_d6cd19b81560fd6e = function(arg0) {
         // Cast intrinsic for `F64 -> Externref`.
         const ret = arg0;

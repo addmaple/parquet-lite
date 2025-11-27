@@ -51,19 +51,31 @@ For enum columns, using index arrays provides massive performance improvements:
 
 | Dataset Size | Method | Time | Speedup vs Full Strings |
 |--------------|--------|------|-------------------------|
-| 10,000 rows | Full strings | ~155 ms | baseline |
-| 10,000 rows | Index array | ~2 ms | **~75x faster** |
-| 10,000 rows | TypedArray indices | ~1.6 ms | **~99x faster** |
-| 100,000 rows | Full strings | ~2 s | baseline |
-| 100,000 rows | Index array | ~22 ms | **~93x faster** |
-| 1,000,000 rows | Full strings | ~5 s | baseline |
-| 1,000,000 rows | Index array | ~174 ms | **~28x faster** |
+| 10,000 rows | Full strings | ~276 ms | baseline |
+| 10,000 rows | Index array | ~3.5 ms | **~79x faster** |
+| 10,000 rows | TypedArray indices | ~3.6 ms | **~77x faster** |
+| 100,000 rows | Full strings | ~4.3 s | baseline |
+| 100,000 rows | Index array | ~31 ms | **~140x faster** |
+| 100,000 rows | TypedArray indices | ~63 ms | **~69x faster** |
+| 1,000,000 rows | Full strings | ~14.9 s | baseline |
+| 1,000,000 rows | Index array | ~332 ms | **~45x faster** |
+| 1,000,000 rows | TypedArray indices | ~3.1 s | **~4.8x faster** |
 
 **Enum optimization tips:**
 - Use `enumValues` in schema + index arrays for best performance
-- TypedArrays (`Uint8Array`) are fastest for small-to-medium datasets
-- Regular arrays work well for very large datasets
+- **Regular index arrays are fastest for large datasets** (100k+ rows)
+- TypedArrays (`Uint8Array`) perform similarly for small datasets (10k rows)
+- At very large sizes (1M+ rows), regular arrays significantly outperform TypedArrays
 - All methods produce identical Parquet files (same file size)
+
+**Why are TypedArrays slower for large arrays?**
+TypedArrays require copying data across the WASM boundary (`to_vec()`), which becomes expensive for very large arrays (1M+ elements = 1MB+ copied). Regular JavaScript arrays benefit from:
+- **JS engine optimizations**: V8/SpiderMonkey optimize array iteration patterns
+- **Lazy element access**: Elements are accessed on-demand without upfront bulk copy
+- **Better cache locality**: Regular arrays may have better memory access patterns
+- **Lower memory overhead**: Less upfront memory allocation
+
+For small-to-medium arrays (10k-100k rows), the difference is minimal, but for very large arrays, regular arrays are significantly faster.
 
 Run benchmarks yourself: `npm run benchmark`
 
