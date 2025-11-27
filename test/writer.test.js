@@ -42,4 +42,3 @@ describe('main module', () => {
   });
 });
 
-
