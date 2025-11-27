@@ -1217,5 +1217,75 @@ describe('parquet-lite integration', () => {
     assert.deepStrictEqual(readData.color, ['red', 'green', 'blue', 'red', 'green']);
   });
 
+  test('Nullable enum logical type - string arrays', async () => {
+    const schema = [
+      { name: 'status', type: 'string', logicalType: 'enum', nullable: true }
+    ];
+    const data = {
+      status: ['active', null, 'inactive', 'pending', null, 'active']
+    };
+    
+    const bytes = await writeParquet(schema, data);
+    const metadata = await readMetadata(bytes);
+    assert.strictEqual(metadata.columns[0].logical_type, 'enum');
+    assert.strictEqual(metadata.columns[0].nullable, true);
+    
+    const readData = await readParquet(bytes);
+    assert.deepStrictEqual(readData.status, ['active', null, 'inactive', 'pending', null, 'active']);
+  });
+
+  test('Nullable enum logical type - index arrays', async () => {
+    const enumValues = ['active', 'inactive', 'pending'];
+    
+    const schema = [
+      { name: 'status', type: 'string', logicalType: 'enum', enumValues, nullable: true }
+    ];
+    // Pass indices with nulls
+    const data = {
+      status: [0, null, 1, 2, null, 0]
+    };
+    
+    const bytes = await writeParquet(schema, data);
+    const metadata = await readMetadata(bytes);
+    assert.strictEqual(metadata.columns[0].logical_type, 'enum');
+    assert.strictEqual(metadata.columns[0].nullable, true);
+    
+    const readData = await readParquet(bytes);
+    // Should read back as full strings with nulls preserved
+    assert.deepStrictEqual(readData.status, ['active', null, 'inactive', 'pending', null, 'active']);
+  });
+
+  test('Nullable enum logical type - index array with mixed nulls', async () => {
+    const enumValues = ['red', 'green', 'blue'];
+    
+    const schema = [
+      { name: 'color', type: 'string', logicalType: 'enum', enumValues, nullable: true }
+    ];
+    // Test nullable enum with index array containing nulls
+    // Note: TypedArrays can't contain nulls, so regular arrays must be used for nullable columns
+    const data = {
+      color: [0, null, 1, 2, null, 0, 1]
+    };
+    
+    const bytes = await writeParquet(schema, data);
+    const readData = await readParquet(bytes);
+    assert.deepStrictEqual(readData.color, ['red', null, 'green', 'blue', null, 'red', 'green']);
+  });
+
+  test('Nullable enum logical type - all nulls', async () => {
+    const enumValues = ['active', 'inactive', 'pending'];
+    
+    const schema = [
+      { name: 'status', type: 'string', logicalType: 'enum', enumValues, nullable: true }
+    ];
+    const data = {
+      status: [null, null, null]
+    };
+    
+    const bytes = await writeParquet(schema, data);
+    const readData = await readParquet(bytes);
+    assert.deepStrictEqual(readData.status, [null, null, null]);
+  });
+
 });
 
