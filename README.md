@@ -8,18 +8,43 @@ A lightweight JavaScript library for reading and writing Parquet files, powered 
 
 ## Features
 
-- **Lightweight**: Separate reader (162KB) and writer (233KB) - only load what you need
+- **Lightweight**: Choose what you need - from 214KB (lite reader) to 568KB (full bundle)
 - **Fast**: Rust/WASM core for high performance
 - **Browser & Node.js**: Works in modern browsers and Node.js 18+
 - **Bundler-friendly**: Works with Vite, Webpack, Rollup, etc.
 - **Pure ESM**: Native ES modules
 - **Nullable columns**: Optional schema fields preserve `null` values end-to-end
+- **Delta encoding**: Reads delta-encoded integer and string columns
+- **Nested types**: Reads list/array columns as nested JavaScript arrays
+
+## Package Exports
+
+| Import | WASM Size | Use Case |
+|--------|-----------|----------|
+| `@addmaple/parquet-lite/reader-lite` | **214 KB** | Read basic parquet (no delta, no nested) |
+| `@addmaple/parquet-lite/writer` | **267 KB** | Write only |
+| `@addmaple/parquet-lite/reader` | **358 KB** | Read with delta encoding + nested types |
+| `@addmaple/parquet-lite` | **568 KB** | Combined reader + writer (single WASM load) |
+
+```javascript
+// Minimal reader for basic parquet files
+import { readParquet } from '@addmaple/parquet-lite/reader-lite'
+
+// Full reader with all features
+import { readParquet } from '@addmaple/parquet-lite/reader'
+
+// Writer only
+import { writeParquet } from '@addmaple/parquet-lite/writer'
+
+// Combined (single WASM load for both read + write)
+import { readParquet, writeParquet } from '@addmaple/parquet-lite'
+```
 
 ## Size Comparison
 
 | Library | Package Size | WASM/Code Size | Notes |
 |---------|-------------|----------------|-------|
-| **@addmaple/parquet-lite** | **167.5 KB** | Reader: 162 KB<br>Writer: 233 KB<br>Total: **395 KB** | Separate reader/writer modules |
+| **@addmaple/parquet-lite** | **500 KB** | Reader-lite: 214 KB<br>Reader: 358 KB<br>Writer: 267 KB<br>Full: **568 KB** | Modular - load only what you need |
 | **parquet-wasm** | **5.9 MB** | ~1.2 MB (brotli) | Includes Apache Arrow, all compression codecs |
 | **parquetjs** | **38.3 KB** (tarball)<br>**4.6 MB** (with deps) | 219 KB unpacked<br>~4.6 MB installed | Pure JS, no WASM, slower, read & write |
 | **hyparquet** | **46.5 KB** | 184.5 KB unpacked | Read-only, pure JS, no deps |
@@ -244,7 +269,11 @@ const bytes = await writeParquet(schema, data, config?);
 ### Reader
 
 ```javascript
-import { readParquet, readMetadata, initReader, getReaderVersion } from '@addmaple/parquet-lite/reader';
+// Full reader (358KB) - supports all encodings including delta + nested types
+import { readParquet, readMetadata, initReader } from '@addmaple/parquet-lite/reader';
+
+// Lite reader (214KB) - for basic parquet files without delta/nested
+import { readParquet, readMetadata, initReader } from '@addmaple/parquet-lite/reader-lite';
 
 // Initialize (optional, called automatically)
 await initReader(wasmSource?);
@@ -256,6 +285,29 @@ const metadata = await readMetadata(bytes);
 // Read data
 const data = await readParquet(bytes, columns?);
 // { columnName: [...values], ... }
+```
+
+### Reader Encoding Support
+
+| Encoding | Status | Notes |
+|----------|--------|-------|
+| Plain | ✅ | Default encoding |
+| Dictionary (RLE/Plain) | ✅ | Efficient for repeated values |
+| Delta Binary Packed | ✅ | For sorted integers |
+| Delta Length Byte Array | ✅ | For variable-length strings |
+| Delta Byte Array | ✅ | For strings with common prefixes |
+| RLE | ✅ | For definition/repetition levels |
+
+### Nested Types
+
+List columns are automatically grouped by repetition levels:
+
+```javascript
+// Parquet file with: [[a, b], [c], [d, e, f]]
+const data = await readParquet(bytes);
+// Column name includes path: "tags.list.element"
+console.log(data['tags.list.element']); 
+// [[a, b], [c], [d, e, f]] - properly nested arrays
 ```
 
 ## Supported Types

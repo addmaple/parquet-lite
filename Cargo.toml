@@ -3,6 +3,8 @@ resolver = "2"
 members = [
     "crates/parquet-lite-writer",
     "crates/parquet-lite-reader",
+    "crates/parquet-lite-reader-lite",
+    "crates/parquet-lite-full",
 ]
 
 [profile.release]

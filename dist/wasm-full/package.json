@@ -1,0 +1,16 @@
+{
+  "name": "parquet-lite-full",
+  "type": "module",
+  "description": "Full Parquet reader+writer compiled to WASM",
+  "version": "1.0.0",
+  "files": [
+    "parquet_lite_full_bg.wasm",
+    "parquet_lite_full.js",
+    "parquet_lite_full.d.ts"
+  ],
+  "main": "parquet_lite_full.js",
+  "types": "parquet_lite_full.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

@@ -1,8 +1,8 @@
 [package]
-name = "parquet-lite-writer"
+name = "parquet-lite-full"
 version = "1.0.0"
 edition = "2021"
-description = "Lightweight Parquet writer compiled to WASM"
+description = "Full Parquet reader+writer compiled to WASM"
 
 [lib]
 crate-type = ["cdylib", "rlib"]

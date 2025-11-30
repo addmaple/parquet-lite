@@ -1,0 +1,16 @@
+{
+  "name": "parquet-lite-reader-lite",
+  "type": "module",
+  "description": "Lightweight Parquet reader compiled to WASM (lite version)",
+  "version": "1.0.0",
+  "files": [
+    "parquet_lite_reader_lite_bg.wasm",
+    "parquet_lite_reader_lite.js",
+    "parquet_lite_reader_lite.d.ts"
+  ],
+  "main": "parquet_lite_reader_lite.js",
+  "types": "parquet_lite_reader_lite.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

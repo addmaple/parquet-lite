@@ -1,6 +1,6 @@
 {
   "name": "@addmaple/parquet-lite",
-  "version": "0.1.4",
+  "version": "1.1.0",
   "description": "Lightweight Parquet reader/writer using Rust compiled to WebAssembly",
   "type": "module",
   "main": "./dist/index.js",
@@ -16,6 +16,10 @@
     "./reader": {
       "types": "./dist/reader.d.ts",
       "import": "./dist/reader.js"
+    },
+    "./reader-lite": {
+      "types": "./dist/reader-lite.d.ts",
+      "import": "./dist/reader-lite.js"
     }
   },
   "files": [
@@ -25,7 +29,9 @@
   "scripts": {
     "build:writer-web": "wasm-pack build crates/parquet-lite-writer --target web --out-dir ../../dist/wasm-writer",
     "build:reader-web": "wasm-pack build crates/parquet-lite-reader --target web --out-dir ../../dist/wasm-reader",
-    "build:wasm": "npm run build:writer-web && npm run build:reader-web",
+    "build:reader-lite-web": "wasm-pack build crates/parquet-lite-reader-lite --target web --out-dir ../../dist/wasm-reader-lite",
+    "build:full-web": "wasm-pack build crates/parquet-lite-full --target web --out-dir ../../dist/wasm-full",
+    "build:wasm": "npm run build:writer-web && npm run build:reader-web && npm run build:reader-lite-web && npm run build:full-web",
     "build:js": "node scripts/build.js",
     "build": "npm run build:wasm && npm run build:js",
     "lint": "cargo clippy --all-targets --all-features -- -D warnings",

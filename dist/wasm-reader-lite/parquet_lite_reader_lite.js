@@ -195,10 +195,7 @@ function takeFromExternrefTable0(idx) {
     return value;
 }
 /**
- * Read metadata from a Parquet file
- *
- * # Arguments
- * * `data` - Uint8Array containing the Parquet file data
+ * Read metadata from a Parquet file (lite version)
  * @param {Uint8Array} data
  * @returns {any}
  */
@@ -222,11 +219,7 @@ function passArrayJsValueToWasm0(array, malloc) {
     return ptr;
 }
 /**
- * Read a Parquet file and return data as a JavaScript object
- *
- * # Arguments
- * * `data` - Uint8Array containing the Parquet file data
- * * `columns` - Optional array of column names to read (reads all if not specified)
+ * Read a Parquet file and return data (lite version - no delta encoding, no nested types)
  * @param {Uint8Array} data
  * @param {string[] | null} [columns]
  * @returns {any}
@@ -464,7 +457,7 @@ async function __wbg_init(module_or_path) {
     }
 
     if (typeof module_or_path === 'undefined') {
-        module_or_path = new URL('parquet_lite_reader_bg.wasm', import.meta.url);
+        module_or_path = new URL('parquet_lite_reader_lite_bg.wasm', import.meta.url);
     }
     const imports = __wbg_get_imports();
 

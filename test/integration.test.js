@@ -158,7 +158,8 @@ describe('parquet-lite integration', () => {
     const bytes = await writeParquet(schema, data);
     const result = await readParquet(bytes);
     
-    assert.deepStrictEqual(result.big, [1000000000, 2000000000, 3000000000]);
+    // Int64 values are returned as BigInt to preserve precision
+    assert.deepStrictEqual(result.big.map(v => Number(v)), [1000000000, 2000000000, 3000000000]);
   });
 
   test('full roundtrip - all types together', async () => {
@@ -189,7 +190,8 @@ describe('parquet-lite integration', () => {
     
     // Verify exact matches
     assert.deepStrictEqual(readData.id, originalData.id, 'int32 values must match exactly');
-    assert.deepStrictEqual(readData.big_id, originalData.big_id, 'int64 values must match exactly');
+    // Int64 values are returned as BigInt to preserve precision
+    assert.deepStrictEqual(readData.big_id.map(v => Number(v)), originalData.big_id, 'int64 values must match exactly');
     assert.deepStrictEqual(readData.active, originalData.active, 'boolean values must match exactly');
     assert.deepStrictEqual(readData.name, originalData.name, 'string values must match exactly');
     
@@ -352,9 +354,9 @@ describe('parquet-lite integration', () => {
     assert.ok(data.Survived);
     assert.strictEqual(data.Survived.length, 891);
     
-    // Verify first row
-    assert.strictEqual(data.PassengerId[0], 1);
-    assert.ok(typeof data.Survived[0] === 'number');
+    // Verify first row (Int64 values are returned as BigInt)
+    assert.strictEqual(Number(data.PassengerId[0]), 1);
+    assert.ok(typeof data.Survived[0] === 'bigint' || typeof data.Survived[0] === 'number');
   });
 
   test('interop: write with parquet-lite, read with parquetjs', async () => {

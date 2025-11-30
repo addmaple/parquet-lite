@@ -2,7 +2,7 @@
   "name": "parquet-lite-writer",
   "type": "module",
   "description": "Lightweight Parquet writer compiled to WASM",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "files": [
     "parquet_lite_writer_bg.wasm",
     "parquet_lite_writer.js",

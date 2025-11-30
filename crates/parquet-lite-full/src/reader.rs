@@ -1002,21 +1002,3 @@ pub fn read_parquet(data: &[u8], columns: Option<Vec<String>>) -> Result<JsValue
 
     Ok(result.into())
 }
-
-/// Get the version of this library
-#[wasm_bindgen(js_name = getVersion)]
-pub fn get_version() -> String {
-    env!("CARGO_PKG_VERSION").to_string()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_physical_type_to_string() {
-        assert_eq!(physical_type_to_string(PhysicalType::Int32), "int32");
-        assert_eq!(physical_type_to_string(PhysicalType::Double), "double");
-        assert_eq!(physical_type_to_string(PhysicalType::ByteArray), "string");
-    }
-}

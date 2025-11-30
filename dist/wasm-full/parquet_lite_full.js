@@ -280,11 +280,67 @@ function getArrayU16FromWasm0(ptr, len) {
     return getUint16ArrayMemory0().subarray(ptr / 2, ptr / 2 + len);
 }
 
+function passArray8ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 1, 1) >>> 0;
+    getUint8ArrayMemory0().set(arg, ptr / 1);
+    WASM_VECTOR_LEN = arg.length;
+    return ptr;
+}
+
 function takeFromExternrefTable0(idx) {
     const value = wasm.__wbindgen_externrefs.get(idx);
     wasm.__externref_table_dealloc(idx);
     return value;
 }
+/**
+ * Read metadata from a Parquet file
+ *
+ * # Arguments
+ * * `data` - Uint8Array containing the Parquet file data
+ * @param {Uint8Array} data
+ * @returns {any}
+ */
+export function readMetadata(data) {
+    const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.readMetadata(ptr0, len0);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return takeFromExternrefTable0(ret[0]);
+}
+
+function passArrayJsValueToWasm0(array, malloc) {
+    const ptr = malloc(array.length * 4, 4) >>> 0;
+    for (let i = 0; i < array.length; i++) {
+        const add = addToExternrefTable0(array[i]);
+        getDataViewMemory0().setUint32(ptr + 4 * i, add, true);
+    }
+    WASM_VECTOR_LEN = array.length;
+    return ptr;
+}
+/**
+ * Read a Parquet file and return data as a JavaScript object
+ *
+ * # Arguments
+ * * `data` - Uint8Array containing the Parquet file data
+ * * `columns` - Optional array of column names to read (reads all if not specified)
+ * @param {Uint8Array} data
+ * @param {string[] | null} [columns]
+ * @returns {any}
+ */
+export function readParquet(data, columns) {
+    const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    var ptr1 = isLikeNone(columns) ? 0 : passArrayJsValueToWasm0(columns, wasm.__wbindgen_malloc);
+    var len1 = WASM_VECTOR_LEN;
+    const ret = wasm.readParquet(ptr0, len0, ptr1, len1);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return takeFromExternrefTable0(ret[0]);
+}
+
 /**
  * Write data to Parquet format
  *
@@ -565,12 +621,24 @@ function __wbg_get_imports() {
         const ret = arg0.length;
         return ret;
     };
+    imports.wbg.__wbg_new_1acc0b6eea89d040 = function() {
+        const ret = new Object();
+        return ret;
+    };
     imports.wbg.__wbg_new_5a79be3ab53b8aa5 = function(arg0) {
         const ret = new Uint8Array(arg0);
         return ret;
     };
+    imports.wbg.__wbg_new_93d9417ed3fb115d = function(arg0) {
+        const ret = new Date(arg0);
+        return ret;
+    };
     imports.wbg.__wbg_new_e17d9f43105b08be = function() {
         const ret = new Array();
+        return ret;
+    };
+    imports.wbg.__wbg_new_with_length_01aa0dc35aa13543 = function(arg0) {
+        const ret = new Uint8Array(arg0 >>> 0);
         return ret;
     };
     imports.wbg.__wbg_next_020810e0ae8ebcb0 = function() { return handleError(function (arg0) {
@@ -581,6 +649,10 @@ function __wbg_get_imports() {
         const ret = arg0.next;
         return ret;
     };
+    imports.wbg.__wbg_parse_2a704d6b78abb2b8 = function() { return handleError(function (arg0, arg1) {
+        const ret = JSON.parse(getStringFromWasm0(arg0, arg1));
+        return ret;
+    }, arguments) };
     imports.wbg.__wbg_prototypesetcall_08c6532019b121d3 = function(arg0, arg1, arg2) {
         Uint32Array.prototype.set.call(getArrayU32FromWasm0(arg0, arg1), arg2);
     };
@@ -609,6 +681,19 @@ function __wbg_get_imports() {
         const ret = arg0.push(arg1);
         return ret;
     };
+    imports.wbg.__wbg_set_3f1d0b984ed272ed = function(arg0, arg1, arg2) {
+        arg0[arg1] = arg2;
+    };
+    imports.wbg.__wbg_set_9e6516df7b7d0f19 = function(arg0, arg1, arg2) {
+        arg0.set(getArrayU8FromWasm0(arg1, arg2));
+    };
+    imports.wbg.__wbg_set_c213c871859d6500 = function(arg0, arg1, arg2) {
+        arg0[arg1 >>> 0] = arg2;
+    };
+    imports.wbg.__wbg_set_c2abbebe8b9ebee1 = function() { return handleError(function (arg0, arg1, arg2) {
+        const ret = Reflect.set(arg0, arg1, arg2);
+        return ret;
+    }, arguments) };
     imports.wbg.__wbg_slice_4de4a6864a2b834b = function(arg0, arg1, arg2) {
         const ret = arg0.slice(arg1 >>> 0, arg2 >>> 0);
         return ret;
@@ -713,7 +798,7 @@ async function __wbg_init(module_or_path) {
     }
 
     if (typeof module_or_path === 'undefined') {
-        module_or_path = new URL('parquet_lite_writer_bg.wasm', import.meta.url);
+        module_or_path = new URL('parquet_lite_full_bg.wasm', import.meta.url);
     }
     const imports = __wbg_get_imports();
 
