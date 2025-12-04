@@ -97,3 +97,5 @@ export async function getReaderVersion() {
   return wasmModule.getVersion();
 }
 
+
+
