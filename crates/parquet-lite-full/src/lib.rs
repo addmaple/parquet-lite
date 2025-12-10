@@ -12,8 +12,5 @@ use wasm_bindgen::prelude::*;
 /// Get the version of this library
 #[wasm_bindgen(js_name = getVersion)]
 pub fn get_version() -> String {
-    env!("CARGO_PKG_VERSION").to_string()
+  env!("CARGO_PKG_VERSION").to_string()
 }
-
-
-

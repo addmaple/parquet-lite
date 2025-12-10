@@ -1,0 +1,7 @@
+# Rustfmt configuration
+edition = "2021"
+max_width = 100
+tab_spaces = 2
+newline_style = "Unix"
+remove_nested_parens = true
+use_small_heuristics = "Default"
