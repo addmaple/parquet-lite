@@ -2,14 +2,14 @@
 /* eslint-disable */
 /**
  * Read metadata from a Parquet file
- * 
+ *
  * # Arguments
  * * `data` - Uint8Array containing the Parquet file data
  */
 export function readMetadata(data: Uint8Array): any;
 /**
  * Read a Parquet file and return data as a JavaScript object
- * 
+ *
  * # Arguments
  * * `data` - Uint8Array containing the Parquet file data
  * * `columns` - Optional array of column names to read (reads all if not specified)
@@ -17,7 +17,7 @@ export function readMetadata(data: Uint8Array): any;
 export function readParquet(data: Uint8Array, columns?: string[] | null): any;
 /**
  * Write data to Parquet format
- * 
+ *
  * # Arguments
  * * `schema` - Array of column definitions [{name: "col1", type: "int32", nullable: false}, ...]
  * * `data` - Object with column names as keys and arrays as values {col1: [1,2,3], col2: ["a","b","c"]}

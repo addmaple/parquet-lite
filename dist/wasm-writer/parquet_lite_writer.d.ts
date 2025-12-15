@@ -2,7 +2,7 @@
 /* eslint-disable */
 /**
  * Write data to Parquet format
- * 
+ *
  * # Arguments
  * * `schema` - Array of column definitions [{name: "col1", type: "int32", nullable: false}, ...]
  * * `data` - Object with column names as keys and arrays as values {col1: [1,2,3], col2: ["a","b","c"]}

@@ -2,14 +2,14 @@
 /* eslint-disable */
 /**
  * Read metadata from a Parquet file
- * 
+ *
  * # Arguments
  * * `data` - Uint8Array containing the Parquet file data
  */
 export function readMetadata(data: Uint8Array): any;
 /**
  * Read a Parquet file and return data as a JavaScript object
- * 
+ *
  * # Arguments
  * * `data` - Uint8Array containing the Parquet file data
  * * `columns` - Optional array of column names to read (reads all if not specified)
